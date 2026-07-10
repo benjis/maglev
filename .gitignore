@@ -1,0 +1,10 @@
+.bundle/
+pkg/
+tmp/
+log/
+**/tmp/
+**/log/
+.DS_Store
+docs/
+AGENTS.md
+spec/guardrails/

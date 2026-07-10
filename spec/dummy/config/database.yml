@@ -1,0 +1,8 @@
+test:
+  adapter: postgresql
+  encoding: unicode
+  database: <%= ENV.fetch("MAGLEV_DATABASE", "maglev_test") %>
+  username: <%= ENV["MAGLEV_DATABASE_USERNAME"] %>
+  password: <%= ENV["MAGLEV_DATABASE_PASSWORD"] %>
+  host: <%= ENV.fetch("MAGLEV_DATABASE_HOST", "localhost") %>
+  port: <%= ENV.fetch("MAGLEV_DATABASE_PORT", 5432) %>
