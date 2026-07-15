@@ -6,14 +6,26 @@ module Maglev
   module Generators
     class InstallGenerator < Rails::Generators::Base
       source_root File.expand_path("templates", __dir__)
+      class_option :embedding_dimensions, type: :numeric, default: 1536
 
       def create_initializer
         create_file "config/initializers/maglev.rb", <<~RUBY
           # frozen_string_literal: true
 
           Maglev.configure do |config|
-            config.embedding_model = "text-embedding-3-small"
-            config.embedding_dimensions = 1536
+            config.embedding_provider do |provider|
+              provider.url = ENV.fetch("MAGLEV_EMBEDDING_URL", "https://api.openai.com/v1")
+              provider.api_key = ENV["MAGLEV_EMBEDDING_API_KEY"]
+              provider.model = "text-embedding-3-small"
+              provider.dimensions = #{options[:embedding_dimensions]}
+            end
+
+            config.generation_provider do |provider|
+              provider.url = ENV.fetch("MAGLEV_GENERATION_URL", "https://api.openai.com/v1")
+              provider.api_key = ENV["MAGLEV_GENERATION_API_KEY"]
+              provider.model = "gpt-4.1-mini"
+            end
+
             config.chunk_size = 1000
           end
         RUBY
@@ -36,7 +48,7 @@ module Maglev
                 t.text :content, null: false
                 t.string :content_checksum, null: false
                 t.string :embedding_model, null: false
-                t.vector :embedding, limit: 1536, null: false
+                t.vector :embedding, limit: #{options[:embedding_dimensions]}, null: false
                 t.timestamps
               end
 

@@ -3,14 +3,13 @@
 require_relative "lib/maglev/version"
 
 Gem::Specification.new do |spec|
-  spec.name = "maglev"
+  spec.name = "maglev-rb"
   spec.version = Maglev::VERSION
   spec.authors = ["Maglev contributors"]
-  spec.email = ["maintainers@example.com"]
 
   spec.summary = "Rails-native semantic knowledge layer for ActiveRecord object graphs."
-  spec.description = "Maglev provides Rails-native foundations for semantic retrieval over ActiveRecord object graphs."
-  spec.homepage = "https://github.com/maglev-rb/maglev"
+  spec.description = "Maglev adds semantic search and grounded RAG to ActiveRecord object graphs."
+  spec.homepage = "https://github.com/benjis/maglev"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
 
@@ -20,7 +19,6 @@ Gem::Specification.new do |spec|
 
   spec.files = Dir.chdir(__dir__) do
     Dir[
-      "AGENTS.md",
       "LICENSE.txt",
       "README.md",
       "README.zh-CN.md",
@@ -32,7 +30,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ["lib"]
 
   spec.add_dependency "neighbor", "~> 0.6"
-  spec.add_dependency "rails", ">= 7.1", "< 8.1"
+  spec.add_dependency "rails", ">= 7.1", "< 9.0"
   spec.add_dependency "ruby_llm", "~> 1.0"
 
   spec.add_development_dependency "pg", "~> 1.5"

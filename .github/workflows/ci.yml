@@ -35,6 +35,11 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+      - name: Load test database schema
+        working-directory: spec/dummy
+        env:
+          RAILS_ENV: test
+        run: bundle exec rails db:schema:load
       - run: bundle exec rspec
       - run: bundle exec standardrb
       - run: bundle exec rubocop

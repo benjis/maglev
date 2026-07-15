@@ -26,32 +26,10 @@ RSpec.describe "ActiveStorage and ActionText knowledge" do
       t.string :name
       t.timestamps
     end
-    connection.create_table(:active_storage_blobs, force: true) do |t|
-      t.string :key, null: false
-      t.string :filename, null: false
-      t.string :content_type
-      t.text :metadata
-      t.string :service_name, null: false
-      t.bigint :byte_size, null: false
-      t.string :checksum
-      t.datetime :created_at, null: false
-    end
-    connection.create_table(:active_storage_attachments, force: true) do |t|
-      t.string :name, null: false
-      t.references :record, null: false, polymorphic: true, index: false
-      t.references :blob, null: false
-      t.datetime :created_at, null: false
-    end
-    connection.create_table(:active_storage_variant_records, force: true) do |t|
-      t.belongs_to :blob, null: false
-      t.string :variation_digest, null: false
-    end
-    connection.create_table(:action_text_rich_texts, force: true) do |t|
-      t.string :name, null: false
-      t.text :body
-      t.references :record, null: false, polymorphic: true, index: false
-      t.timestamps
-    end
+    ActiveStorage::Attachment.delete_all
+    ActiveStorage::VariantRecord.delete_all
+    ActionText::RichText.delete_all
+    ActiveStorage::Blob.delete_all
     connection.create_table(:maglev_chunks, force: true) do |t|
       t.string :owner_type, null: false
       t.bigint :owner_id, null: false
@@ -69,10 +47,6 @@ RSpec.describe "ActiveStorage and ActionText knowledge" do
     clear_enqueued_jobs
     clear_performed_jobs
     connection&.drop_table(:maglev_chunks, if_exists: true)
-    connection&.drop_table(:action_text_rich_texts, if_exists: true)
-    connection&.drop_table(:active_storage_variant_records, if_exists: true)
-    connection&.drop_table(:active_storage_attachments, if_exists: true)
-    connection&.drop_table(:active_storage_blobs, if_exists: true)
     connection&.drop_table(:content_customers, if_exists: true)
   end
 

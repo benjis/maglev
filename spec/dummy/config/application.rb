@@ -13,6 +13,7 @@ module Dummy
     config.load_defaults 7.1
     config.active_support.to_time_preserves_timezone = :zone
     config.active_storage.service = :test
+    config.active_job.queue_adapter = :test
     config.eager_load = false
     config.root = File.expand_path("..", __dir__)
   end

@@ -4,6 +4,19 @@ require "spec_helper"
 require "maglev/provider_call"
 
 RSpec.describe Maglev::ProviderCall do
+  it "times out and retries each provider attempt" do
+    attempts = 0
+
+    expect do
+      described_class.new(max_attempts: 2, timeout: 0.01).call(operation: "embed") do
+        attempts += 1
+        sleep 0.05
+      end
+    end.to raise_error(Maglev::RetryableProviderError)
+
+    expect(attempts).to eq(2)
+  end
+
   it "retries retryable provider failures and emits notifications" do
     attempts = 0
     events = []

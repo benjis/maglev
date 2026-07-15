@@ -5,6 +5,8 @@ ENV["RAILS_ENV"] ||= "test"
 require_relative "dummy/config/environment"
 require "rspec/rails"
 
+ActiveRecord::Migration.maintain_test_schema!
+
 RSpec.configure do |config|
   config.use_transactional_fixtures = false
   config.infer_spec_type_from_file_location!

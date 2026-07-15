@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/maglev-rb/maglev/actions/workflows/ci.yml/badge.svg)](https://github.com/maglev-rb/maglev/actions/workflows/ci.yml)
+[![CI](https://github.com/benjis/maglev/actions/workflows/ci.yml/badge.svg)](https://github.com/benjis/maglev/actions/workflows/ci.yml)
 [![Ruby](https://img.shields.io/badge/Ruby-3.2%2B-CC342D.svg)](https://www.ruby-lang.org/)
 [![Rails](https://img.shields.io/badge/Rails-7.1%20%7C%208.0-D30001.svg)](https://rubyonrails.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.txt)
@@ -12,8 +12,11 @@
 Maglev 是面向 ActiveRecord 对象图的 Rails 原生语义知识层。你只需声明领域模型中哪些信息适合被理解和检索，Maglev 就会把记录、关联关系、附件和富文本转换为可搜索的知识。它通过 Rails 原有的生命周期机制持续更新这些知识，并以熟悉的模型 API 提供语义搜索和有依据的问答能力。
 
 ```ruby
-Customer.search("存在未解决支持风险的企业客户")
-customer.ask("为什么这位客户可能会流失？", user: current_user)
+Product.search("存在续航或易用性问题的笔记本电脑")
+
+response = Product.ask("有哪些反复出现、值得调查的产品问题？", user: current_user)
+response.text
+response.sources # 支撑回答的 ActiveRecord 记录和内容分块
 ```
 
 Maglev 专注于检索增强生成（RAG）。ActiveRecord 仍然负责精确筛选、关联查询、报表和聚合；Maglev 则处理用自然语言提出的问题。
@@ -39,75 +42,82 @@ Maglev 需要 Ruby 3.2+、Rails 7.1 或 8.0、PostgreSQL，以及
 
 ```ruby
 # Gemfile
-gem "maglev"
+gem "maglev-rb"
 ```
 
 ```bash
 bundle install
-bin/rails generate maglev:install
+bin/rails generate maglev:install --embedding-dimensions=1536
 bin/rails db:migrate
 ```
 
-生成器会创建 `config/initializers/maglev.rb` 和 `maglev_chunks` 表迁移，其中包含基于余弦距离的 HNSW 索引。
+生成器会把 `--embedding-dimensions` 同时写入 `config/initializers/maglev.rb` 和 `maglev_chunks` 的向量列，并创建基于余弦距离的 HNSW 索引。
 
 ### 2. 配置模型提供商
 
-Maglev 的默认嵌入和文本生成适配器基于 [`ruby_llm`](https://github.com/crmne/ruby_llm)。
-
 ```ruby
-# config/initializers/ruby_llm.rb
-RubyLLM.configure do |config|
-  config.openai_api_key = ENV.fetch("OPENAI_API_KEY")
-end
-
 # config/initializers/maglev.rb
 Maglev.configure do |config|
-  config.embedding_model = "text-embedding-3-small"
-  config.embedding_dimensions = 1536
-  config.generation_model = "gpt-4.1-mini"
+  config.embedding_provider do |provider|
+    provider.url = "http://localhost:11434/v1"
+    provider.api_key = ENV["LOCAL_EMBEDDING_API_KEY"]
+    provider.model = "Qwen3-Embedding-0.6B-8bit"
+    provider.dimensions = 1024
+  end
+
+  config.generation_provider do |provider|
+    provider.url = "https://api.deepseek.com/v1"
+    provider.api_key = Rails.application.credentials.dig(:deepseek_api_key)
+    provider.model = "deepseek-chat"
+  end
+
   config.chunk_size = 1000
 end
 ```
 
-如果修改嵌入维度，请在执行迁移前同步修改生成迁移中的向量维度限制。
+Embedding 与 generation endpoint 相互独立，可以使用不同的 URL、API key 和 model。默认 provider bridge 使用 OpenAI-compatible HTTP endpoint；其他协议仍可通过 Maglev 自定义 adapter 接入。
+
+对于已有安装，请同时修改配置维度和数据库向量列。Maglev 会在请求 embedding 前检查两者是否一致。
 
 ### 3. 声明模型知识
 
 ```ruby
-class Customer < ApplicationRecord
-  has_many :tickets, inverse_of: :customer
-  has_many_attached :contracts
-  has_rich_text :notes
+class Product < ApplicationRecord
+  has_many :reviews, inverse_of: :product
+  has_many :product_categories, inverse_of: :product
+  has_many :categories, through: :product_categories
+  has_many_attached :images
+  has_rich_text :description
 
   has_knowledge do
-    expose :name, :industry, :description, :renewal_at
-    hide :internal_risk_score
-    tags :customer, :commercial
+    expose :name, :sku, :price, :status
+    tags :product
 
-    include_related :tickets, depth: 1, limit: 20
+    include_related :reviews, depth: 1, limit: 10
+    include_related :categories, depth: 1, limit: 10, inverse: :products
 
-    expose_attached :contracts
-    expose_rich_text :notes
+    expose_attached :images
+    expose_rich_text :description
   end
 end
 
-class Ticket < ApplicationRecord
-  belongs_to :customer, inverse_of: :tickets
+class Review < ApplicationRecord
+  belongs_to :product, inverse_of: :reviews
 
   has_knowledge do
-    expose :subject, :status, :priority
+    expose :rating, :title, :body
   end
 end
 ```
 
-只有显式公开的字段和内容源才会进入 Maglev 的知识快照。关联深度和数量限制保证对象图遍历有明确边界。每个关联模型独立声明自己的公开知识，因此连接模型中的敏感字段不会被意外展开。
+只有显式公开的字段和内容源才会进入 Maglev 的知识快照。关联的 `limit` 限制每个关联包含的记录数；`depth` 限制关联跳数：`depth: 1` 会包含直接关联记录，但不会继续展开该记录的关联。`config.max_relation_depth` 是每个快照从根记录到叶记录的全局硬上限。每个关联模型独立声明自己的公开知识，因此连接模型中的敏感字段不会被意外展开。
 
 ### 4. 为已有记录建立索引
 
 新建和更新记录时会自动将 `Maglev::ReindexJob` 加入队列。安装后可执行一次已有数据回填：
 
 ```bash
-bin/rails maglev:reindex[Customer]
+bin/rails maglev:reindex[Product]
 # 或重建所有声明了 has_knowledge 的模型
 bin/rails maglev:reindex_all
 ```
@@ -117,14 +127,14 @@ bin/rails maglev:reindex_all
 ### 5. 搜索与提问
 
 ```ruby
-results = Customer.search(
-  "存在未解决支持问题的企业客户",
+results = Product.search(
+  "存在续航或易用性问题的笔记本电脑",
   limit: 10,
   user: current_user
 )
 
 results.each do |result|
-  result.owner       # => Customer
+  result.owner       # => Product
   result.content     # 检索到的快照分块
   result.source      # => "snapshot"
   result.distance    # 余弦距离，越小越接近
@@ -135,17 +145,30 @@ end
 根据检索到的记录生成有依据的回答：
 
 ```ruby
-response = Customer.ask(
-  "哪些客户存在风险？原因是什么？",
-  limit: 10,
+response = Product.ask(
+  "商品团队应调查哪些反复出现的产品问题？",
+  limit: 5,
   user: current_user
 )
 
 response.text
-response.sources
+response.sources # 所有者、分块、距离和实际检索到的内容
 response.metadata
+```
 
-customer.ask("为什么这位客户可能不满意？", user: current_user)
+例如，回答可能根据检索到的评价内容，总结出风扇噪音、触控板偶尔失灵以及实际续航低于宣传值。应把它理解为对“已检索上下文”的总结，而不是对全部产品做出的数据库聚合；每项结论都应通过 `response.sources` 展示依据。
+
+实例级问题会限定在单个知识所有者内：
+
+```ruby
+product.ask("总结这款产品被反馈的优点和缺点。", user: current_user)
+```
+
+Rails 数据变化时，Maglev 还会沿已声明的关联更新知识。将评价移动到另一款产品后，事务提交会为原产品和新产品安排重新索引，使两边的可搜索知识保持最新：
+
+```ruby
+review.update!(product: replacement_product)
+# 两个受影响的产品都会加入 Maglev::ReindexJob 队列。
 ```
 
 如果没有检索到可用上下文，Maglev 会返回确定性的“上下文不足”响应，而不会让模型自行猜测。
@@ -253,9 +276,19 @@ end
 
 ```ruby
 Maglev.configure do |config|
-  config.embedding_model = "text-embedding-3-small"
-  config.embedding_dimensions = 1536
-  config.generation_model = "gpt-4.1-mini"
+  config.embedding_provider do |provider|
+    provider.url = ENV.fetch("MAGLEV_EMBEDDING_URL", "https://api.openai.com/v1")
+    provider.api_key = ENV["MAGLEV_EMBEDDING_API_KEY"]
+    provider.model = "text-embedding-3-small"
+    provider.dimensions = 1536
+  end
+
+  config.generation_provider do |provider|
+    provider.url = ENV.fetch("MAGLEV_GENERATION_URL", "https://api.openai.com/v1")
+    provider.api_key = ENV["MAGLEV_GENERATION_API_KEY"]
+    provider.model = "gpt-4.1-mini"
+  end
+
   config.chunk_size = 1000
 
   config.context_max_characters = 4000
@@ -275,6 +308,8 @@ Maglev.configure do |config|
   config.logger = Rails.logger
 end
 ```
+
+`provider_timeout` 对每次 provider 尝试分别生效。超时会被视为可重试错误，并计入 `provider_max_attempts`。
 
 当应用需要不同的模型提供商或策略行为时，可注入自定义的 `embedding_adapter`、`generation_adapter`、`attachment_extractor`、`authorization_adapter` 或 `source_redactor`。测试环境可以使用确定性适配器，全程不发起网络请求。
 

@@ -1,9 +1,9 @@
 PATH
   remote: .
   specs:
-    maglev (0.1.0)
+    maglev-rb (0.1.1)
       neighbor (~> 0.6)
-      rails (>= 7.1, < 8.1)
+      rails (>= 7.1, < 9.0)
       ruby_llm (~> 1.0)
 
 GEM
@@ -288,10 +288,11 @@ GEM
     zeitwerk (2.8.2)
 
 PLATFORMS
+  arm64-darwin-22
   arm64-darwin-24
 
 DEPENDENCIES
-  maglev!
+  maglev-rb!
   pg (~> 1.5)
   rake (~> 13.0)
   rspec-rails (~> 7.0)

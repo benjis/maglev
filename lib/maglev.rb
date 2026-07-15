@@ -2,6 +2,7 @@
 
 require_relative "maglev/version"
 require_relative "maglev/configuration"
+require_relative "maglev/provider_configuration"
 require_relative "maglev/errors"
 require_relative "maglev/authorization"
 require_relative "maglev/provider_call"

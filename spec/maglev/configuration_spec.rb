@@ -14,4 +14,44 @@ RSpec.describe Maglev do
     expect(yielded).to be_a(Maglev::Configuration)
     expect(yielded).to be(described_class.configuration)
   end
+
+  it "configures embedding and generation endpoints independently" do
+    configuration = Maglev::Configuration.new
+
+    configuration.embedding_provider do |provider|
+      provider.url = "http://localhost:11434/v1"
+      provider.api_key = "local"
+      provider.model = "local-embedding"
+      provider.dimensions = 1024
+    end
+    configuration.generation_provider do |provider|
+      provider.url = "https://api.deepseek.com/v1"
+      provider.api_key = "secret"
+      provider.model = "deepseek-chat"
+    end
+
+    expect(configuration.embedding_provider.to_h).to eq(
+      url: "http://localhost:11434/v1",
+      api_key: "local",
+      model: "local-embedding",
+      dimensions: 1024
+    )
+    expect(configuration.generation_provider.to_h).to eq(
+      url: "https://api.deepseek.com/v1",
+      api_key: "secret",
+      model: "deepseek-chat"
+    )
+  end
+
+  it "keeps legacy model settings synchronized with provider configuration" do
+    configuration = Maglev::Configuration.new
+
+    configuration.embedding_model = "legacy-embedding"
+    configuration.embedding_dimensions = 768
+    configuration.generation_model = "legacy-generation"
+
+    expect(configuration.embedding_provider.model).to eq("legacy-embedding")
+    expect(configuration.embedding_provider.dimensions).to eq(768)
+    expect(configuration.generation_provider.model).to eq("legacy-generation")
+  end
 end

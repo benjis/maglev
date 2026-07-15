@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/maglev-rb/maglev/actions/workflows/ci.yml/badge.svg)](https://github.com/maglev-rb/maglev/actions/workflows/ci.yml)
+[![CI](https://github.com/benjis/maglev/actions/workflows/ci.yml/badge.svg)](https://github.com/benjis/maglev/actions/workflows/ci.yml)
 [![Ruby](https://img.shields.io/badge/Ruby-3.2%2B-CC342D.svg)](https://www.ruby-lang.org/)
 [![Rails](https://img.shields.io/badge/Rails-7.1%20%7C%208.0-D30001.svg)](https://rubyonrails.org/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.txt)
@@ -12,8 +12,11 @@
 Maglev is a Rails-native semantic knowledge layer for ActiveRecord object graphs. Declare which parts of your domain are safe and useful to understand, and Maglev turns records, relationships, attachments, and rich text into searchable knowledge. It keeps that knowledge fresh through normal Rails lifecycle hooks and gives you semantic search and grounded answers through familiar model APIs.
 
 ```ruby
-Customer.search("enterprise accounts with unresolved support risk")
-customer.ask("Why might this customer churn?", user: current_user)
+Product.search("laptops with battery or usability complaints")
+
+response = Product.ask("What recurring product issues should we investigate?", user: current_user)
+response.text
+response.sources # the ActiveRecord records and chunks behind the answer
 ```
 
 Maglev is deliberately focused on retrieval-augmented generation (RAG). ActiveRecord remains the source of truth for exact filters, joins, reporting, and aggregation; Maglev handles questions expressed in human language.
@@ -39,75 +42,82 @@ Add Maglev to your application:
 
 ```ruby
 # Gemfile
-gem "maglev"
+gem "maglev-rb"
 ```
 
 ```bash
 bundle install
-bin/rails generate maglev:install
+bin/rails generate maglev:install --embedding-dimensions=1536
 bin/rails db:migrate
 ```
 
-The generator creates `config/initializers/maglev.rb` and a migration for the `maglev_chunks` table, including a cosine HNSW index.
+The generator writes `--embedding-dimensions` to both `config/initializers/maglev.rb` and the `maglev_chunks` vector column, and includes a cosine HNSW index.
 
 ### 2. Configure your provider
 
-Maglev uses [`ruby_llm`](https://github.com/crmne/ruby_llm) for its default embedding and generation adapters.
-
 ```ruby
-# config/initializers/ruby_llm.rb
-RubyLLM.configure do |config|
-  config.openai_api_key = ENV.fetch("OPENAI_API_KEY")
-end
-
 # config/initializers/maglev.rb
 Maglev.configure do |config|
-  config.embedding_model = "text-embedding-3-small"
-  config.embedding_dimensions = 1536
-  config.generation_model = "gpt-4.1-mini"
+  config.embedding_provider do |provider|
+    provider.url = "http://localhost:11434/v1"
+    provider.api_key = ENV["LOCAL_EMBEDDING_API_KEY"]
+    provider.model = "Qwen3-Embedding-0.6B-8bit"
+    provider.dimensions = 1024
+  end
+
+  config.generation_provider do |provider|
+    provider.url = "https://api.deepseek.com/v1"
+    provider.api_key = Rails.application.credentials.dig(:deepseek_api_key)
+    provider.model = "deepseek-chat"
+  end
+
   config.chunk_size = 1000
 end
 ```
 
-Changing embedding dimensions also requires changing the generated migration's vector limit before migrating.
+Embedding and generation endpoints are independent and may use different URLs, API keys, and models. The default provider bridge expects OpenAI-compatible HTTP endpoints. Applications can still inject custom Maglev adapters for other protocols.
+
+For an existing installation, change the configured dimensions and the database vector column together. Maglev checks their consistency before requesting an embedding.
 
 ### 3. Declare model knowledge
 
 ```ruby
-class Customer < ApplicationRecord
-  has_many :tickets, inverse_of: :customer
-  has_many_attached :contracts
-  has_rich_text :notes
+class Product < ApplicationRecord
+  has_many :reviews, inverse_of: :product
+  has_many :product_categories, inverse_of: :product
+  has_many :categories, through: :product_categories
+  has_many_attached :images
+  has_rich_text :description
 
   has_knowledge do
-    expose :name, :industry, :description, :renewal_at
-    hide :internal_risk_score
-    tags :customer, :commercial
+    expose :name, :sku, :price, :status
+    tags :product
 
-    include_related :tickets, depth: 1, limit: 20
+    include_related :reviews, depth: 1, limit: 10
+    include_related :categories, depth: 1, limit: 10, inverse: :products
 
-    expose_attached :contracts
-    expose_rich_text :notes
+    expose_attached :images
+    expose_rich_text :description
   end
 end
 
-class Ticket < ApplicationRecord
-  belongs_to :customer, inverse_of: :tickets
+class Review < ApplicationRecord
+  belongs_to :product, inverse_of: :reviews
 
   has_knowledge do
-    expose :subject, :status, :priority
+    expose :rating, :title, :body
   end
 end
 ```
 
-Only explicitly exposed fields and content sources enter Maglev's knowledge snapshot. Relation depth and limits keep graph traversal bounded. Related models define their own exposed knowledge, so sensitive join-model fields are not flattened accidentally.
+Only explicitly exposed fields and content sources enter Maglev's knowledge snapshot. Relation `limit` bounds the number of records per association. Relation `depth` bounds association hops: `depth: 1` includes the directly related record but does not expand that record's relations. `config.max_relation_depth` is the hard root-to-leaf ceiling for every snapshot. Related models define their own exposed knowledge, so sensitive join-model fields are not flattened accidentally.
 
 ### 4. Index existing records
 
 New and updated records enqueue `Maglev::ReindexJob` automatically. Backfill existing data once after installation:
 
 ```bash
-bin/rails maglev:reindex[Customer]
+bin/rails maglev:reindex[Product]
 # or every model that declares has_knowledge
 bin/rails maglev:reindex_all
 ```
@@ -117,14 +127,14 @@ Make sure your Active Job backend is running in production.
 ### 5. Search and ask
 
 ```ruby
-results = Customer.search(
-  "enterprise customers with unresolved support problems",
+results = Product.search(
+  "laptops with battery or usability complaints",
   limit: 10,
   user: current_user
 )
 
 results.each do |result|
-  result.owner       # => Customer
+  result.owner       # => Product
   result.content     # retrieved snapshot chunk
   result.source      # => "snapshot"
   result.distance    # cosine distance; lower is closer
@@ -135,17 +145,30 @@ end
 Generate an answer grounded in the retrieved records:
 
 ```ruby
-response = Customer.ask(
-  "Which customers appear at risk, and why?",
-  limit: 10,
+response = Product.ask(
+  "What recurring product issues should the merchandising team investigate?",
+  limit: 5,
   user: current_user
 )
 
 response.text
-response.sources
+response.sources # owner, chunk, distance, and the exact retrieved content
 response.metadata
+```
 
-customer.ask("Why might this customer be unhappy?", user: current_user)
+For example, an answer might summarize a loud fan, intermittent trackpad responsiveness, and lower-than-advertised battery life from retrieved review content. Treat it as a summary of the retrieved context—not an aggregate over every product—and use `response.sources` to show the evidence behind each conclusion.
+
+Instance-level questions stay scoped to one owner:
+
+```ruby
+product.ask("Summarize the reported strengths and weaknesses of this product.", user: current_user)
+```
+
+Maglev also follows declared relationships when Rails data changes. Moving a review queues reindexing for both the previous and current product after commit, so their searchable knowledge stays current:
+
+```ruby
+review.update!(product: replacement_product)
+# Maglev::ReindexJob is queued for both affected products.
 ```
 
 When retrieval yields no usable context, Maglev returns a deterministic insufficient-context response instead of asking the model to improvise.
@@ -253,9 +276,19 @@ Without an adapter, all records are allowed. Pass `user:` consistently anywhere 
 
 ```ruby
 Maglev.configure do |config|
-  config.embedding_model = "text-embedding-3-small"
-  config.embedding_dimensions = 1536
-  config.generation_model = "gpt-4.1-mini"
+  config.embedding_provider do |provider|
+    provider.url = ENV.fetch("MAGLEV_EMBEDDING_URL", "https://api.openai.com/v1")
+    provider.api_key = ENV["MAGLEV_EMBEDDING_API_KEY"]
+    provider.model = "text-embedding-3-small"
+    provider.dimensions = 1536
+  end
+
+  config.generation_provider do |provider|
+    provider.url = ENV.fetch("MAGLEV_GENERATION_URL", "https://api.openai.com/v1")
+    provider.api_key = ENV["MAGLEV_GENERATION_API_KEY"]
+    provider.model = "gpt-4.1-mini"
+  end
+
   config.chunk_size = 1000
 
   config.context_max_characters = 4000
@@ -275,6 +308,8 @@ Maglev.configure do |config|
   config.logger = Rails.logger
 end
 ```
+
+`provider_timeout` applies to each provider attempt. Timed-out attempts are retryable and count toward `provider_max_attempts`.
 
 Inject custom `embedding_adapter`, `generation_adapter`, `attachment_extractor`, `authorization_adapter`, or `source_redactor` objects when your application needs different provider or policy behavior. Tests can use deterministic adapters without making network calls.
 

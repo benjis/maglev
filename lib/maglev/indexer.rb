@@ -24,11 +24,17 @@ module Maglev
 
     def index
       validate_owner_id!
-      chunks = Chunker.new(max_characters: @chunk_size).call(@record.maglev_snapshot)
-
+      validate_storage_dimensions!
       ActiveSupport::Notifications.instrument("maglev.index.start", owner_type: @record.class.name, owner_id: @record.id)
-      @vector_store ? index_vector_store(chunks) : index_chunk_model(chunks)
-      ActiveSupport::Notifications.instrument("maglev.index.success", owner_type: @record.class.name, owner_id: @record.id, chunk_count: chunks.length)
+
+      chunk_count = loop do
+        snapshot = @record.maglev_snapshot
+        chunks = Chunker.new(max_characters: @chunk_size).call(snapshot)
+        prepared = @vector_store ? prepare_documents(chunks) : prepare_chunks(chunks)
+        break chunks.length if persist_if_current(snapshot, prepared)
+      end
+
+      ActiveSupport::Notifications.instrument("maglev.index.success", owner_type: @record.class.name, owner_id: @record.id, chunk_count: chunk_count)
     rescue => error
       ActiveSupport::Notifications.instrument("maglev.index.failure", owner_type: @record.class.name, owner_id: @record.id, error_class: error.class.name)
       raise
@@ -40,40 +46,62 @@ module Maglev
 
     private
 
-    def index_vector_store(chunks)
-      documents = chunks.each_with_index.map { |content, chunk_index| document_for(content, chunk_index) }
-      @vector_store.delete_by_owner(owner_type: @record.class.name, owner_id: @record.id)
-      @vector_store.upsert(documents: documents)
-    end
+    def persist_if_current(snapshot, prepared)
+      with_owner_lock do
+        next false unless @record.maglev_snapshot == snapshot
 
-    def index_chunk_model(chunks)
-      @chunk_model.transaction do
-        chunks.each_with_index do |content, chunk_index|
-          index_chunk(content, chunk_index)
-        end
-        delete_obsolete_chunks(chunks.length)
+        @vector_store ? persist_documents(prepared) : persist_chunks(prepared)
       end
     end
 
-    def index_chunk(content, chunk_index)
-      checksum = Digest::SHA256.hexdigest(content)
-      existing = identity_scope.find_by(chunk_index: chunk_index, content_checksum: checksum)
-      return if existing
+    def prepare_chunks(chunks)
+      chunks.each_with_index.map do |content, chunk_index|
+        checksum = Digest::SHA256.hexdigest(content)
+        existing = identity_scope.find_by(chunk_index: chunk_index, content_checksum: checksum)
+        embedding = embed(content) unless existing
+        {content: content, chunk_index: chunk_index, checksum: checksum, embedding: embedding}
+      end
+    end
 
-      identity_scope.where(chunk_index: chunk_index).delete_all
-      embedding = ProviderCall.new.call(operation: "embed") { @embedding_adapter.embed(content) }
-      validate_embedding!(embedding)
+    def persist_chunks(chunks)
+      return false unless chunks.all? { |chunk| chunk[:embedding] || matching_chunk?(chunk) }
+
+      @chunk_model.transaction do
+        chunks.each { |chunk| persist_chunk(chunk) }
+        delete_obsolete_chunks(chunks.length)
+      end
+      true
+    end
+
+    def matching_chunk?(chunk)
+      identity_scope.find_by(chunk_index: chunk[:chunk_index], content_checksum: chunk[:checksum])
+    end
+
+    def persist_chunk(chunk)
+      return if matching_chunk?(chunk)
+
+      identity_scope.where(chunk_index: chunk[:chunk_index]).delete_all
 
       @chunk_model.create!(
         **identity,
         owner: @record,
         source: SOURCE,
-        chunk_index: chunk_index,
-        content: content,
-        content_checksum: checksum,
+        chunk_index: chunk[:chunk_index],
+        content: chunk[:content],
+        content_checksum: chunk[:checksum],
         embedding_model: Maglev.configuration.embedding_model,
-        embedding: embedding
+        embedding: chunk[:embedding]
       )
+    end
+
+    def prepare_documents(chunks)
+      chunks.each_with_index.map { |content, chunk_index| document_for(content, chunk_index) }
+    end
+
+    def persist_documents(documents)
+      @vector_store.delete_by_owner(owner_type: @record.class.name, owner_id: @record.id)
+      @vector_store.upsert(documents: documents)
+      true
     end
 
     def delete_obsolete_chunks(chunk_count)
@@ -105,9 +133,31 @@ module Maglev
       raise ConfigurationError, "Embedding adapter returned #{actual} dimensions; expected #{@embedding_dimensions} dimensions"
     end
 
-    def document_for(content, chunk_index)
+    def validate_storage_dimensions!
+      return if @vector_store || !@chunk_model.respond_to?(:columns_hash)
+
+      column = @chunk_model.columns_hash["embedding"]
+      database_dimensions = column&.limit
+      return unless database_dimensions && database_dimensions != @embedding_dimensions
+
+      raise ConfigurationError,
+        "Configured embedding dimensions #{@embedding_dimensions} do not match " \
+        "#{@chunk_model.table_name}.embedding vector(#{database_dimensions})"
+    end
+
+    def embed(content)
       embedding = ProviderCall.new.call(operation: "embed") { @embedding_adapter.embed(content) }
       validate_embedding!(embedding)
+      embedding
+    end
+
+    def with_owner_lock(&block)
+      return yield unless @record.respond_to?(:with_lock)
+
+      @record.with_lock(&block)
+    end
+
+    def document_for(content, chunk_index)
       VectorStores::Document.new(
         owner_type: @record.class.name,
         owner_id: @record.id,
@@ -118,7 +168,7 @@ module Maglev
         content: content,
         content_checksum: Digest::SHA256.hexdigest(content),
         embedding_model: Maglev.configuration.embedding_model,
-        embedding: embedding
+        embedding: embed(content)
       )
     end
   end

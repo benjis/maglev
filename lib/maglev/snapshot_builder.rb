@@ -7,12 +7,13 @@ require_relative "snapshot"
 
 module Maglev
   class SnapshotBuilder
-    def initialize(record, config, path: nil, visited: nil, attachment_extractor: nil)
+    def initialize(record, config, path: nil, visited: nil, attachment_extractor: nil, remaining_depth: Maglev.configuration.max_relation_depth)
       @record = record
       @config = config
       @path = path
       @visited = visited || {}
       @attachment_extractor = attachment_extractor || Maglev.configuration.attachment_extractor || AttachmentExtractor.new
+      @remaining_depth = remaining_depth
     end
 
     def build
@@ -59,7 +60,10 @@ module Maglev
     end
 
     def relation_lines
+      return [] unless @remaining_depth.positive?
+
       @config.relations.flat_map do |relation|
+        remaining_depth = [@remaining_depth, relation.depth].min - 1
         relation_records, collection = relation_records(relation)
         relation_records.each_with_index.flat_map do |related_record, index|
           relation_path = path_for(relation, index, collection: collection)
@@ -68,7 +72,8 @@ module Maglev
             related_record.class.maglev_config,
             path: relation_path,
             visited: @visited,
-            attachment_extractor: @attachment_extractor
+            attachment_extractor: @attachment_extractor,
+            remaining_depth: remaining_depth
           ).build.to_s.split("\n")
         end
       end
