@@ -2,9 +2,9 @@ PATH
   remote: .
   specs:
     maglev-rb (0.1.1)
+      faraday (~> 2.0)
       neighbor (~> 0.6)
       rails (>= 7.1, < 9.0)
-      ruby_llm (~> 1.0)
 
 GEM
   remote: https://rubygems.org/
@@ -93,17 +93,12 @@ GEM
     drb (2.2.3)
     erb (6.0.4)
     erubi (1.13.1)
-    event_stream_parser (1.0.0)
     faraday (2.14.3)
       faraday-net_http (>= 2.0, < 3.5)
       json
       logger
-    faraday-multipart (1.2.0)
-      multipart-post (~> 2.0)
     faraday-net_http (3.4.4)
       net-http (~> 0.5)
-    faraday-retry (2.4.0)
-      faraday (~> 2.0)
     globalid (1.4.0)
       activesupport (>= 6.1)
     i18n (1.15.2)
@@ -132,7 +127,6 @@ GEM
     minitest (6.0.6)
       drb (~> 2.0)
       prism (~> 1.5)
-    multipart-post (2.4.1)
     neighbor (0.6.0)
       activerecord (>= 7.1)
     net-http (0.9.1)
@@ -247,17 +241,6 @@ GEM
       rubocop (>= 1.75.0, < 2.0)
       rubocop-ast (>= 1.47.1, < 2.0)
     ruby-progressbar (1.13.0)
-    ruby_llm (1.16.0)
-      base64
-      event_stream_parser (~> 1)
-      faraday (>= 1.10.0)
-      faraday-multipart (>= 1)
-      faraday-net_http (>= 1)
-      faraday-retry (>= 1)
-      marcel (~> 1)
-      ruby_llm-schema (~> 0)
-      zeitwerk (~> 2)
-    ruby_llm-schema (0.4.0)
     securerandom (0.4.1)
     standard (1.55.0)
       language_server-protocol (~> 3.17.0.2)

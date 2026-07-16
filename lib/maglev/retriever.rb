@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "adapters/ruby_llm_embedding"
+require_relative "adapters/faraday_embedding"
 require_relative "authorization"
 require_relative "chunk"
 require_relative "provider_call"
@@ -12,7 +12,7 @@ module Maglev
     def initialize(model_class, chunk_model: Chunk, embedding_adapter: Maglev.configuration.embedding_adapter, authorization: Authorization.new, vector_store: Maglev.configuration.vector_store)
       @model_class = model_class
       @chunk_model = chunk_model
-      @embedding_adapter = embedding_adapter || Adapters::RubyLLMEmbedding.new
+      @embedding_adapter = embedding_adapter || Adapters::FaradayEmbedding.new
       @authorization = authorization
       @vector_store = vector_store
     end

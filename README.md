@@ -75,7 +75,7 @@ Maglev.configure do |config|
 end
 ```
 
-Embedding and generation endpoints are independent and may use different URLs, API keys, and models. The default provider bridge expects OpenAI-compatible HTTP endpoints. Applications can still inject custom Maglev adapters for other protocols.
+Embedding and generation endpoints are independent and may use different URLs, API keys, and models. The built-in adapters call OpenAI-compatible `/embeddings` and `/chat/completions` endpoints and expect the corresponding OpenAI-compatible JSON response shapes. They do not provide a model registry or native Anthropic, Gemini, or other provider protocols; inject custom Maglev adapters when another protocol is required.
 
 For an existing installation, change the configured dimensions and the database vector column together. Maglev checks their consistency before requesting an embedding.
 
@@ -310,6 +310,8 @@ end
 ```
 
 `provider_timeout` applies to each provider attempt. Timed-out attempts are retryable and count toward `provider_max_attempts`.
+
+The built-in provider implementation is intentionally a thin OpenAI-compatible HTTP bridge. It supports embeddings and non-streaming chat completions only; streaming, tool calling, multimodal requests, structured output, and provider-specific model discovery are outside the current RAG-only release.
 
 Inject custom `embedding_adapter`, `generation_adapter`, `attachment_extractor`, `authorization_adapter`, or `source_redactor` objects when your application needs different provider or policy behavior. Tests can use deterministic adapters without making network calls.
 

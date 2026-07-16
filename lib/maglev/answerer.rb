@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "configuration"
-require_relative "adapters/ruby_llm_generation"
+require_relative "adapters/faraday_generation"
 require_relative "authorization"
 require_relative "context_assembler"
 require_relative "prompt_builder"
@@ -16,7 +16,7 @@ module Maglev
       authorization: Authorization.new)
       @model_class = model_class
       @retriever = retriever
-      @generation_adapter = generation_adapter || Adapters::RubyLLMGeneration.new
+      @generation_adapter = generation_adapter || Adapters::FaradayGeneration.new
       @authorization = authorization
     end
 

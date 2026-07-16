@@ -11,6 +11,8 @@ RSpec.describe "release metadata" do
     expect(specification.require_paths).to eq(["lib"])
     expect(specification.files).to include("lib/maglev.rb")
     expect(specification.files).not_to include("AGENTS.md")
+    expect(specification.dependencies.map(&:name)).to include("faraday")
+    expect(specification.dependencies.map(&:name)).not_to include("ruby_llm")
   end
 
   it "links the package to its public source repository without placeholder contacts" do
@@ -21,5 +23,13 @@ RSpec.describe "release metadata" do
       "rubygems_mfa_required" => "true"
     )
     expect(Array(specification.email)).not_to include("maintainers@example.com")
+  end
+
+  it "does not ship RubyLLM runtime integration" do
+    runtime_source = Dir[File.expand_path("../../lib/**/*.rb", __dir__)].to_h do |path|
+      [path, File.read(path)]
+    end
+
+    expect(runtime_source.values.join("\n")).not_to match(/ruby_llm|RubyLLM/)
   end
 end

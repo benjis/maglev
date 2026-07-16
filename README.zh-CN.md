@@ -75,7 +75,7 @@ Maglev.configure do |config|
 end
 ```
 
-Embedding 与 generation endpoint 相互独立，可以使用不同的 URL、API key 和 model。默认 provider bridge 使用 OpenAI-compatible HTTP endpoint；其他协议仍可通过 Maglev 自定义 adapter 接入。
+Embedding 与 generation endpoint 相互独立，可以使用不同的 URL、API key 和 model。内置 adapter 调用 OpenAI-compatible `/embeddings` 与 `/chat/completions` endpoint，并要求返回对应的 OpenAI-compatible JSON 结构。内置实现不提供 model registry，也不直接支持 Anthropic、Gemini 等原生协议；需要其他协议时可注入 Maglev 自定义 adapter。
 
 对于已有安装，请同时修改配置维度和数据库向量列。Maglev 会在请求 embedding 前检查两者是否一致。
 
@@ -310,6 +310,8 @@ end
 ```
 
 `provider_timeout` 对每次 provider 尝试分别生效。超时会被视为可重试错误，并计入 `provider_max_attempts`。
+
+内置 provider 实现刻意保持为精简的 OpenAI-compatible HTTP bridge，只支持 embedding 与非流式 chat completion。Streaming、tool calling、多模态请求、structured output 和 provider-specific model discovery 均不属于当前 RAG-only release。
 
 当应用需要不同的模型提供商或策略行为时，可注入自定义的 `embedding_adapter`、`generation_adapter`、`attachment_extractor`、`authorization_adapter` 或 `source_redactor`。测试环境可以使用确定性适配器，全程不发起网络请求。
 

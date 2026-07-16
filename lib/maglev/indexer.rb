@@ -2,7 +2,7 @@
 
 require "digest"
 
-require_relative "adapters/ruby_llm_embedding"
+require_relative "adapters/faraday_embedding"
 require_relative "chunk"
 require_relative "chunker"
 require_relative "errors"
@@ -16,7 +16,7 @@ module Maglev
     def initialize(record, chunk_model: Chunk, embedding_adapter: Maglev.configuration.embedding_adapter, embedding_dimensions: Maglev.configuration.embedding_dimensions, chunk_size: Maglev.configuration.chunk_size, vector_store: Maglev.configuration.vector_store)
       @record = record
       @chunk_model = chunk_model
-      @embedding_adapter = embedding_adapter || Adapters::RubyLLMEmbedding.new
+      @embedding_adapter = embedding_adapter || Adapters::FaradayEmbedding.new
       @embedding_dimensions = embedding_dimensions
       @chunk_size = chunk_size
       @vector_store = vector_store
