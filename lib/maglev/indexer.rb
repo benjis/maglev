@@ -6,25 +6,36 @@ require_relative "adapters/faraday_embedding"
 require_relative "chunk"
 require_relative "chunker"
 require_relative "errors"
+require_relative "index_identity"
 require_relative "provider_call"
 require_relative "vector_stores/document"
 
 module Maglev
   class Indexer
     SOURCE = "snapshot"
+    IdentityConfiguration = Struct.new(
+      :embedding_model,
+      :embedding_dimensions,
+      :embedding_adapter_id,
+      :embedding_adapter_version,
+      :application_index_version
+    )
+    private_constant :IdentityConfiguration
 
-    def initialize(record, chunk_model: Chunk, embedding_adapter: Maglev.configuration.embedding_adapter, embedding_dimensions: Maglev.configuration.embedding_dimensions, chunk_size: Maglev.configuration.chunk_size, vector_store: Maglev.configuration.vector_store)
+    def initialize(record, chunk_model: Chunk, embedding_adapter: Maglev.configuration.embedding_adapter, embedding_dimensions: Maglev.configuration.embedding_dimensions, chunk_size: Maglev.configuration.chunk_size, vector_store: Maglev.configuration.vector_store, index_identity: nil)
       @record = record
       @chunk_model = chunk_model
       @embedding_adapter = embedding_adapter || Adapters::FaradayEmbedding.new
       @embedding_dimensions = embedding_dimensions
       @chunk_size = chunk_size
       @vector_store = vector_store
+      @index_identity = index_identity
     end
 
     def index
       validate_owner_id!
       validate_storage_dimensions!
+      prepare_index_identity
       ActiveSupport::Notifications.instrument("maglev.index.start", owner_type: @record.class.name, owner_id: @record.id)
 
       chunk_count = loop do
@@ -41,6 +52,8 @@ module Maglev
     end
 
     def unindex
+      return @vector_store.delete_by_owner(owner_type: @record.class.name, owner_id: @record.id) if @vector_store
+
       identity_scope.delete_all
     end
 
@@ -57,7 +70,7 @@ module Maglev
     def prepare_chunks(chunks)
       chunks.each_with_index.map do |content, chunk_index|
         checksum = Digest::SHA256.hexdigest(content)
-        existing = identity_scope.find_by(chunk_index: chunk_index, content_checksum: checksum)
+        existing = identity_scope.find_by(chunk_index: chunk_index, content_checksum: checksum, index_version: @index_version)
         embedding = embed(content) unless existing
         {content: content, chunk_index: chunk_index, checksum: checksum, embedding: embedding}
       end
@@ -74,7 +87,7 @@ module Maglev
     end
 
     def matching_chunk?(chunk)
-      identity_scope.find_by(chunk_index: chunk[:chunk_index], content_checksum: chunk[:checksum])
+      identity_scope.find_by(chunk_index: chunk[:chunk_index], content_checksum: chunk[:checksum], index_version: @index_version)
     end
 
     def persist_chunk(chunk)
@@ -89,18 +102,32 @@ module Maglev
         chunk_index: chunk[:chunk_index],
         content: chunk[:content],
         content_checksum: chunk[:checksum],
-        embedding_model: Maglev.configuration.embedding_model,
+        embedding_model: @identity_configuration.embedding_model,
+        index_version: @index_version,
         embedding: chunk[:embedding]
       )
     end
 
     def prepare_documents(chunks)
-      chunks.each_with_index.map { |content, chunk_index| document_for(content, chunk_index) }
+      prepared = chunks.each_with_index.map do |content, chunk_index|
+        {
+          id: stable_document_id(chunk_index),
+          content: content,
+          chunk_index: chunk_index,
+          checksum: Digest::SHA256.hexdigest(content)
+        }
+      end
+      existing_by_id = @vector_store.fetch(ids: prepared.map { |chunk| chunk[:id] }).to_h { |document| [document.id, document] }
+
+      prepared.map do |chunk|
+        existing = existing_by_id[chunk[:id]]
+        reusable = existing && existing.content_checksum == chunk[:checksum] && existing.index_version == @index_version
+        document_for(chunk, embedding: reusable ? existing.embedding : embed(chunk[:content]))
+      end
     end
 
     def persist_documents(documents)
-      @vector_store.delete_by_owner(owner_type: @record.class.name, owner_id: @record.id)
-      @vector_store.upsert(documents: documents)
+      @vector_store.replace_owner(owner_type: @record.class.name, owner_id: @record.id, documents: documents)
       true
     end
 
@@ -151,24 +178,47 @@ module Maglev
       embedding
     end
 
+    def prepare_index_identity
+      configuration = Maglev.configuration
+      @identity_configuration = IdentityConfiguration.new(
+        embedding_model: configuration.embedding_model,
+        embedding_dimensions: @embedding_dimensions,
+        embedding_adapter_id: configuration.embedding_adapter_id,
+        embedding_adapter_version: configuration.embedding_adapter_version,
+        application_index_version: configuration.application_index_version
+      )
+      identity = @index_identity || IndexIdentity.new(
+        configuration: @identity_configuration,
+        adapter: @embedding_adapter,
+        chunk_size: @chunk_size
+      )
+      @index_version = identity.to_s
+    end
+
     def with_owner_lock(&block)
       return yield unless @record.respond_to?(:with_lock)
 
       @record.with_lock(&block)
     end
 
-    def document_for(content, chunk_index)
+    def stable_document_id(chunk_index)
+      "#{@record.class.name}:#{@record.id}:#{SOURCE}:#{chunk_index}"
+    end
+
+    def document_for(chunk, embedding:)
       VectorStores::Document.new(
+        id: chunk[:id],
         owner_type: @record.class.name,
         owner_id: @record.id,
         owner_model_name: @record.class.name,
         owner: @record,
         source: SOURCE,
-        chunk_index: chunk_index,
-        content: content,
-        content_checksum: Digest::SHA256.hexdigest(content),
-        embedding_model: Maglev.configuration.embedding_model,
-        embedding: embed(content)
+        chunk_index: chunk[:chunk_index],
+        content: chunk[:content],
+        content_checksum: chunk[:checksum],
+        embedding_model: @identity_configuration.embedding_model,
+        index_version: @index_version,
+        embedding: embedding
       )
     end
   end

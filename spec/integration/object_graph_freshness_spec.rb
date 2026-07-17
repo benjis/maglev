@@ -4,6 +4,10 @@ require "rails_helper"
 require "active_job/test_helper"
 
 class GraphStaticEmbeddingAdapter
+  def maglev_adapter_id = "test.object_graph_freshness"
+
+  def maglev_adapter_version = "1"
+
   def embed(_text)
     [1.0, 0.0, 0.0]
   end
@@ -44,6 +48,7 @@ RSpec.describe "Object graph knowledge freshness" do
       t.text :content, null: false
       t.string :content_checksum, null: false
       t.string :embedding_model, null: false
+      t.string :index_version, limit: 64, null: false
       t.vector :embedding, limit: 3, null: false
       t.timestamps
     end

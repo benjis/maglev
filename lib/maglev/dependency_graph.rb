@@ -4,13 +4,17 @@ require_relative "reindex_job"
 
 module Maglev
   class DependencyGraph
-    Edge = Struct.new(:owner_class, :related_class, :relation_name, :inverse)
+    Edge = Struct.new(:owner_class, :related_class, :relation_name, :inverse, :depth)
 
     class << self
       def register(schema)
         schema.relations.each do |relation|
-          edge = Edge.new(schema.model_class, relation.related_class, relation.name, relation.inverse)
-          next if edges_for(relation.related_class).any? { |existing| same_edge?(existing, edge) }
+          edge = Edge.new(schema.model_class, relation.related_class, relation.name, relation.inverse, relation.depth)
+          existing = edges_for(relation.related_class).find { |candidate| same_edge?(candidate, edge) }
+          if existing
+            existing.depth = edge.depth
+            next
+          end
 
           edges_for(relation.related_class) << edge
           install_callbacks(relation.related_class)
@@ -18,21 +22,21 @@ module Maglev
       end
 
       def reindex_dependents_for(record)
-        dependent_owners = previous_dependent_owners(record)
-        edges_for(record.class).each do |edge|
-          dependent_owners.concat(owners_for(record, edge))
-        end
+        enqueue(transitive_dependents_for(record))
+        clear_previous_dependent_owners(record)
+      end
 
-        dependent_owners.uniq { |owner| [owner.class.name, owner.id] }.each do |owner|
-          next unless owner.respond_to?(:id) && owner.id
-
-          ReindexJob.perform_later(owner.class.name, owner.id)
-        end
-        record.remove_instance_variable(:@maglev_previous_dependent_owners) if record.instance_variable_defined?(:@maglev_previous_dependent_owners)
+      def reindex_record_and_dependents_for(record)
+        enqueue([record, *transitive_dependents_for(record)])
+        clear_previous_dependent_owners(record)
       end
 
       def capture_previous_dependents_for(record)
-        owners = edges_for(record.class).flat_map { |edge| previous_owners_for(record, edge) }
+        owners = edges_for(record.class).flat_map do |edge|
+          next [] if edge.depth < 1
+
+          previous_owners_for(record, edge)
+        end
         record.instance_variable_set(:@maglev_previous_dependent_owners, owners)
       end
 
@@ -96,6 +100,51 @@ module Maglev
         else
           []
         end
+      end
+
+      def transitive_dependents_for(record)
+        visited = {owner_key(record) => true}
+        queue = previous_dependent_owners(record).map { |owner| [owner, 1] }
+        queue.concat(direct_dependents_for(record, 0))
+        dependents = []
+
+        until queue.empty?
+          owner, distance = queue.shift
+          key = owner_key(owner)
+          next if visited[key]
+
+          visited[key] = true
+          dependents << owner
+          queue.concat(direct_dependents_for(owner, distance))
+        end
+
+        dependents
+      end
+
+      def direct_dependents_for(record, distance)
+        next_distance = distance + 1
+
+        edges_for(record.class).flat_map do |edge|
+          next [] if edge.depth < next_distance
+
+          owners_for(record, edge).map { |owner| [owner, next_distance] }
+        end
+      end
+
+      def enqueue(owners)
+        owners.uniq { |owner| owner_key(owner) }.each do |owner|
+          next unless owner.respond_to?(:id) && owner.id
+
+          ReindexJob.perform_later(owner.class.name, owner.id)
+        end
+      end
+
+      def owner_key(owner)
+        [owner.class.name, owner.respond_to?(:id) ? owner.id : owner.object_id]
+      end
+
+      def clear_previous_dependent_owners(record)
+        record.remove_instance_variable(:@maglev_previous_dependent_owners) if record.instance_variable_defined?(:@maglev_previous_dependent_owners)
       end
 
       def previous_owners_for(record, edge)

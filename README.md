@@ -47,7 +47,7 @@ gem "maglev-rb"
 
 ```bash
 bundle install
-bin/rails generate maglev:install --embedding-dimensions=1536
+bin/rails generate maglev:install --embedding-dimensions=1024
 bin/rails db:migrate
 ```
 
@@ -317,10 +317,28 @@ Inject custom `embedding_adapter`, `generation_adapter`, `attachment_extractor`,
 
 ## Vector Stores
 
+### Index identity and upgrades
+
+Every document stores an `index_version` fingerprint. Fingerprint format version 1 uses the fixed `maglev-index` namespace and covers the embedding model and dimensions, adapter ID and version, chunking algorithm and size, and `application_index_version`. Custom embedding adapters must implement `maglev_adapter_id` and `maglev_adapter_version`, or configure `embedding_adapter_id` and `embedding_adapter_version` explicitly. Change `application_index_version` when application preprocessing changes.
+
+For an existing installation, deploy in this order:
+
+```bash
+bin/rails generate maglev:upgrade_index_version
+bin/rails db:migrate
+bin/rails maglev:reindex_all
+```
+
+The upgrade migration adds a nullable `index_version`; legacy rows remain unavailable to retrieval until the full reindex completes. If embedding dimensions change, separately migrate the pgvector vector column to the new dimension and rebuild its cosine HNSW index before reindexing. Configuration alone cannot resize the database column or index.
+
 PostgreSQL with pgvector is the default production path. Maglev also exposes a compact backend contract for applications that need another store:
 
 ```ruby
 class MyVectorStore < Maglev::VectorStores::Base
+  def fetch(ids:)
+    # Return existing documents for these stable logical IDs
+  end
+
   def upsert(documents:)
     # Persist or replace documents by document.id
   end
@@ -337,6 +355,10 @@ class MyVectorStore < Maglev::VectorStores::Base
     # Delete every document belonging to this owner
   end
 
+  def replace_owner(owner_type:, owner_id:, documents:)
+    # Atomically replace the owner's complete searchable generation
+  end
+
   def healthcheck = :ok
   def capabilities = {metadata_filtering: true}
 end
@@ -347,6 +369,8 @@ end
 ```
 
 `Maglev::VectorStores::Memory` is useful for tests and local experiments. Custom stores should preserve document metadata filtering and stable document identity semantics.
+
+Third-party stores must implement `fetch(ids:)` and an atomic `replace_owner`. Failed replacement must preserve the previous complete generation, and concurrent replacement/deletion for one owner must be linearizable. A fallback composed of `delete_by_owner` followed by `upsert` is not atomic and is not safe.
 
 Custom vector stores currently receive model and owner metadata filters, but not the configured authorization scope. `ask` still authorizes retrieved owners individually; direct `search(..., user:)` with a custom store must not be treated as authorization-filtered. Apply tenant or policy filtering inside the custom store, or use the default pgvector path when authorization-scoped search is required.
 

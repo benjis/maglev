@@ -11,6 +11,7 @@ RSpec.describe "release metadata" do
     expect(specification.require_paths).to eq(["lib"])
     expect(specification.files).to include("lib/maglev.rb")
     expect(specification.files).not_to include("AGENTS.md")
+    expect(specification.files).to be_none { |path| path.start_with?("docs/superpowers/") }
     expect(specification.dependencies.map(&:name)).to include("faraday")
     expect(specification.dependencies.map(&:name)).not_to include("ruby_llm")
   end

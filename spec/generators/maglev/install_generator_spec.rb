@@ -21,6 +21,7 @@ RSpec.describe Maglev::Generators::InstallGenerator do
       expect(File.read(migrations.first)).to include("enable_extension \"vector\"")
       expect(File.read(migrations.first)).to include("create_table :maglev_chunks")
       expect(File.read(migrations.first)).to include("t.string :owner_model_name")
+      expect(File.read(migrations.first)).to include("t.string :index_version, limit: 64, null: false")
       expect(File.read(migrations.first)).to include("t.vector :embedding, limit: 1536")
       expect(File).not_to exist(File.join(destination, "config/initializers/ruby_llm.rb"))
       expect(described_class.class_options.keys.map(&:to_sym)).not_to include(:ruby_llm_initializer)

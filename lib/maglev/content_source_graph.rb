@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "reindex_job"
+require_relative "dependency_graph"
 
 module Maglev
   class ContentSourceGraph
@@ -14,14 +14,14 @@ module Maglev
         record = attachment.record
         return unless record && declared_attached?(record.class, attachment.name)
 
-        ReindexJob.perform_later(record.class.name, record.id) if record.id
+        DependencyGraph.reindex_record_and_dependents_for(record) if record.id
       end
 
       def reindex_rich_text_owner(rich_text)
         record = rich_text.record
         return unless record && declared_rich_text?(record.class, rich_text.name)
 
-        ReindexJob.perform_later(record.class.name, record.id) if record.id
+        DependencyGraph.reindex_record_and_dependents_for(record) if record.id
       end
 
       private

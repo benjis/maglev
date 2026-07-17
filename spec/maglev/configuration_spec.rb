@@ -54,4 +54,20 @@ RSpec.describe Maglev do
     expect(configuration.embedding_provider.dimensions).to eq(768)
     expect(configuration.generation_provider.model).to eq("legacy-generation")
   end
+
+  it "provides index identity overrides with a stable application default" do
+    configuration = Maglev::Configuration.new
+
+    expect(configuration.embedding_adapter_id).to be_nil
+    expect(configuration.embedding_adapter_version).to be_nil
+    expect(configuration.application_index_version).to eq("1")
+
+    configuration.embedding_adapter_id = "custom.embedding"
+    configuration.embedding_adapter_version = "3"
+    configuration.application_index_version = "release-2"
+
+    expect(configuration.embedding_adapter_id).to eq("custom.embedding")
+    expect(configuration.embedding_adapter_version).to eq("3")
+    expect(configuration.application_index_version).to eq("release-2")
+  end
 end

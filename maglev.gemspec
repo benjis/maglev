@@ -25,7 +25,7 @@ Gem::Specification.new do |spec|
       "lib/**/*.rb",
       "lib/**/*.rake",
       "docs/**/*.md"
-    ]
+    ] - Dir["docs/superpowers/**/*.md"]
   end
   spec.require_paths = ["lib"]
 

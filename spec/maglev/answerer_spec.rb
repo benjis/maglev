@@ -75,6 +75,19 @@ RSpec.describe Maglev::Answerer do
     expect(retriever.calls).to eq([{query: "Why unhappy?", limit: 3, owner: customer}])
   end
 
+  it "includes multiple retrieved chunks for an instance question" do
+    customer = AnswerCustomer.new(42)
+    retriever = FakeAnswerRetriever.new([
+      Maglev::SearchResult.new(owner: customer, content: "late invoices", source: "snapshot", distance: 0.1, chunk_index: 0),
+      Maglev::SearchResult.new(owner: customer, content: "support escalations", source: "snapshot", distance: 0.2, chunk_index: 1)
+    ])
+
+    response = described_class.new(AnswerCustomer, retriever: retriever, generation_adapter: FakeAnswerGenerationAdapter.new)
+      .ask("Why unhappy?", limit: 3, owner: customer)
+
+    expect(response.sources.map { |source| source[:chunk_index] }).to eq([0, 1])
+  end
+
   it "returns insufficient context without calling generation when retrieval is empty" do
     retriever = FakeAnswerRetriever.new([])
     generator = FakeAnswerGenerationAdapter.new

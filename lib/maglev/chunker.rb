@@ -2,7 +2,13 @@
 
 module Maglev
   class Chunker
+    ALGORITHM_VERSION = "1"
+
     def initialize(max_characters: Maglev.configuration.chunk_size)
+      unless max_characters.is_a?(Integer) && max_characters.positive?
+        raise ArgumentError, "max_characters must be positive"
+      end
+
       @max_characters = max_characters
     end
 
@@ -17,7 +23,7 @@ module Maglev
       return [part] if part.length <= @max_characters
 
       line_chunks = split_lines(part)
-      return line_chunks if line_chunks.length > 1
+      return line_chunks.flat_map { |chunk| hard_split(chunk) } if line_chunks.length > 1
 
       chunks = []
       current = +""
@@ -33,7 +39,7 @@ module Maglev
       end
 
       chunks << current unless current.empty?
-      chunks
+      chunks.flat_map { |chunk| hard_split(chunk) }
     end
 
     def split_lines(part)
@@ -48,6 +54,27 @@ module Maglev
           current = +""
         else
           current = candidate
+        end
+      end
+
+      chunks << current unless current.empty?
+      chunks
+    end
+
+    def hard_split(text)
+      chunks = []
+      current = +""
+
+      text.scan(/\X/).each do |grapheme|
+        if grapheme.length > @max_characters
+          chunks << current unless current.empty?
+          chunks.concat(grapheme.chars.each_slice(@max_characters).map(&:join))
+          current = +""
+        elsif current.length + grapheme.length > @max_characters
+          chunks << current
+          current = +grapheme
+        else
+          current << grapheme
         end
       end
 

@@ -3,8 +3,16 @@
 module Maglev
   module VectorStores
     class Base
+      def fetch(ids:)
+        raise NotImplementedError, "#{self.class.name} must implement #fetch"
+      end
+
       def upsert(documents:)
         raise NotImplementedError, "#{self.class.name} must implement #upsert"
+      end
+
+      def replace_owner(owner_type:, owner_id:, documents:)
+        raise NotImplementedError, "#{self.class.name} must implement #replace_owner"
       end
 
       def search(vector:, filters:, limit:)

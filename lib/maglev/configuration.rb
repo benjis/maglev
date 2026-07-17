@@ -20,7 +20,8 @@ module Maglev
       :attachment_extractor, :attachment_allowed_content_types,
       :attachment_max_bytes, :attachment_max_characters, :authorization_adapter,
       :provider_max_attempts, :provider_timeout, :source_redactor, :logger,
-      :vector_store
+      :vector_store, :embedding_adapter_id, :embedding_adapter_version,
+      :application_index_version
 
     def initialize
       @embedding_provider = ProviderConfiguration.new(
@@ -43,6 +44,7 @@ module Maglev
       @provider_max_attempts = 2
       @provider_timeout = 30
       @source_redactor = nil
+      @application_index_version = "1"
     end
 
     def embedding_provider

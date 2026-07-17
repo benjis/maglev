@@ -8,6 +8,10 @@ module Maglev
     # Embedding adapter using Faraday directly
     # Compatible with OpenAI embedding API format
     class FaradayEmbedding < EmbeddingAdapter
+      def maglev_adapter_id = "maglev.openai_compatible_http_embedding"
+
+      def maglev_adapter_version = "1"
+
       def initialize(provider: Maglev.configuration.embedding_provider, connection: nil)
         @provider = provider
         @client = FaradayClient.new(@provider, connection: connection)

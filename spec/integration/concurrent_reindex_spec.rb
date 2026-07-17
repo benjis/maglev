@@ -6,6 +6,10 @@ require "timeout"
 class ConcurrentReindexBarrierAdapter
   attr_reader :transaction_states
 
+  def maglev_adapter_id = "test.concurrent_reindex"
+
+  def maglev_adapter_version = "1"
+
   def initialize(parties: nil, block_on: nil)
     @parties = parties
     @block_on = block_on
@@ -63,6 +67,7 @@ RSpec.describe "Concurrent reindexing" do
       t.text :content, null: false
       t.string :content_checksum, null: false
       t.string :embedding_model, null: false
+      t.string :index_version, limit: 64, null: false
       t.vector :embedding, limit: 3, null: false
       t.timestamps
     end

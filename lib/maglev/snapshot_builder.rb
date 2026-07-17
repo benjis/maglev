@@ -169,15 +169,45 @@ module Maglev
       value = @record.public_send(relation.name)
       records, collection = if value.nil?
         [[], false]
+      elsif loaded_collection_proxy?(value)
+        [ordered_loaded_records(value), true]
+      elsif active_record_relation?(value)
+        [ordered_relation(value).limit(relation.limit).to_a, true]
       elsif value.respond_to?(:to_ary)
         [value.to_ary, true]
-      elsif value.respond_to?(:limit)
-        [value.limit(relation.limit).to_a, true]
       else
         [[value], false]
       end
 
       [records.first(relation.limit), collection]
+    end
+
+    def active_record_relation?(value)
+      (defined?(ActiveRecord::Relation) && value.is_a?(ActiveRecord::Relation)) ||
+        (defined?(ActiveRecord::Associations::CollectionProxy) && value.is_a?(ActiveRecord::Associations::CollectionProxy))
+    end
+
+    def loaded_collection_proxy?(value)
+      defined?(ActiveRecord::Associations::CollectionProxy) &&
+        value.is_a?(ActiveRecord::Associations::CollectionProxy) && value.loaded?
+    end
+
+    def ordered_relation(value)
+      return value unless value.order_values.empty?
+
+      primary_key = value.klass.primary_key
+      primary_key ? value.order(primary_key => :asc) : value
+    end
+
+    def ordered_loaded_records(value)
+      records = value.to_ary
+      return records unless value.order_values.empty?
+
+      primary_key = value.klass.primary_key
+      return records unless primary_key
+
+      persisted, unsaved = records.partition(&:persisted?)
+      persisted.sort_by { |record| record.public_send(primary_key) } + unsaved
     end
 
     def path_for(relation, index, collection:)

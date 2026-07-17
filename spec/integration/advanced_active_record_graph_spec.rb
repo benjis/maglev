@@ -101,6 +101,94 @@ RSpec.describe "Advanced ActiveRecord graph support" do
     expect(snapshot).not_to include("owner-only metadata")
   end
 
+  it "orders and limits an unloaded collection association in SQL" do
+    AdvancedGraphCustomer.has_knowledge do
+      expose :name
+      include_related :tickets, depth: 1, limit: 2
+    end
+    customer = AdvancedGraphCustomer.create!(name: "Acme")
+    AdvancedGraphTicket.create!(id: 30, customer: customer, subject: "Third")
+    AdvancedGraphTicket.create!(id: 10, customer: customer, subject: "First")
+    AdvancedGraphTicket.create!(id: 20, customer: customer, subject: "Second")
+    customer = AdvancedGraphCustomer.find(customer.id)
+    queries = []
+
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |_name, _start, _finish, _id, payload|
+      queries << payload[:sql] if payload[:sql].include?(%("advanced_graph_tickets"))
+    end
+    snapshot = customer.maglev_snapshot
+    ActiveSupport::Notifications.unsubscribe(subscriber)
+
+    expect(snapshot).to include("tickets[0].subject: First")
+    expect(snapshot).to include("tickets[1].subject: Second")
+    expect(snapshot).not_to include("Third")
+    expect(queries.one?).to be(true)
+    expect(queries.first).to match(/ORDER BY .*advanced_graph_tickets.*id.*ASC/i)
+    expect(queries.first).to match(/LIMIT (?:2|\$\d+)\z/i)
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+  end
+
+  it "preserves unsaved records from a loaded collection association" do
+    AdvancedGraphCustomer.has_knowledge do
+      expose :name
+      include_related :tickets, depth: 1, limit: 3
+    end
+    customer = AdvancedGraphCustomer.create!(name: "Acme")
+    customer.tickets.create!(id: 30, subject: "Third")
+    customer.tickets.create!(id: 10, subject: "First")
+    customer.tickets.load
+    customer.tickets.target.reverse!
+    customer.tickets.build(subject: "Draft")
+
+    snapshot = customer.maglev_snapshot
+
+    expect(snapshot).to include("tickets[0].subject: First")
+    expect(snapshot).to include("tickets[1].subject: Third")
+    expect(snapshot).to include("tickets[2].subject: Draft")
+  end
+
+  it "uses the same primary-key order for loaded and unloaded collection associations" do
+    AdvancedGraphCustomer.has_knowledge do
+      expose :name
+      include_related :tickets, depth: 1, limit: 2
+    end
+    customer = AdvancedGraphCustomer.create!(name: "Acme")
+    AdvancedGraphTicket.create!(id: 30, customer: customer, subject: "Third")
+    AdvancedGraphTicket.create!(id: 10, customer: customer, subject: "First")
+    AdvancedGraphTicket.create!(id: 20, customer: customer, subject: "Second")
+
+    unloaded_snapshot = AdvancedGraphCustomer.find(customer.id).maglev_snapshot
+    loaded_customer = AdvancedGraphCustomer.find(customer.id)
+    loaded_customer.tickets.load
+    loaded_customer.tickets.target.reverse!
+
+    expect(loaded_customer.maglev_snapshot).to eq(unloaded_snapshot)
+  end
+
+  it "preserves explicit association order for a loaded collection" do
+    AdvancedGraphCustomer.has_many :tickets,
+      -> { order(id: :desc) },
+      class_name: "AdvancedGraphTicket",
+      inverse_of: :customer,
+      foreign_key: :advanced_graph_customer_id
+    AdvancedGraphCustomer.has_knowledge do
+      expose :name
+      include_related :tickets, depth: 1, limit: 2
+    end
+    customer = AdvancedGraphCustomer.create!(name: "Acme")
+    AdvancedGraphTicket.create!(id: 30, customer: customer, subject: "Third")
+    AdvancedGraphTicket.create!(id: 10, customer: customer, subject: "First")
+    AdvancedGraphTicket.create!(id: 20, customer: customer, subject: "Second")
+    customer.tickets.load
+
+    snapshot = customer.maglev_snapshot
+
+    expect(snapshot).to include("tickets[0].subject: Third")
+    expect(snapshot).to include("tickets[1].subject: Second")
+    expect(snapshot).not_to include("First")
+  end
+
   it "reindexes both previous and current owners when a direct related record is reassigned" do
     old_customer = AdvancedGraphCustomer.create!(name: "Old")
     new_customer = AdvancedGraphCustomer.create!(name: "New")

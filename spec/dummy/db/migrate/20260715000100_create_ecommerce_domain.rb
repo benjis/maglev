@@ -152,6 +152,7 @@ class CreateEcommerceDomain < ActiveRecord::Migration[7.1]
       t.text :content, null: false
       t.string :content_checksum, null: false
       t.string :embedding_model, null: false
+      t.string :index_version, limit: 64, null: false
       t.vector :embedding, limit: 3, null: false
       t.timestamps
       t.index %i[owner_type owner_id source chunk_index], unique: true, name: :index_maglev_chunks_on_owner_source_chunk

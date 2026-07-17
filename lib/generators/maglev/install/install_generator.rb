@@ -48,6 +48,7 @@ module Maglev
                 t.text :content, null: false
                 t.string :content_checksum, null: false
                 t.string :embedding_model, null: false
+                t.string :index_version, limit: 64, null: false
                 t.vector :embedding, limit: #{options[:embedding_dimensions]}, null: false
                 t.timestamps
               end

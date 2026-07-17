@@ -47,7 +47,7 @@ gem "maglev-rb"
 
 ```bash
 bundle install
-bin/rails generate maglev:install --embedding-dimensions=1536
+bin/rails generate maglev:install --embedding-dimensions=1024
 bin/rails db:migrate
 ```
 
@@ -317,10 +317,28 @@ end
 
 ## 向量存储
 
+### 索引身份与升级
+
+每个文档都会保存 `index_version` 指纹。指纹格式版本 1 使用固定的 `maglev-index` namespace，并包含 embedding model 与维度、adapter ID 与版本、分块算法与大小，以及 `application_index_version`。自定义 embedding adapter 必须实现 `maglev_adapter_id` 和 `maglev_adapter_version`，或显式配置 `embedding_adapter_id` 与 `embedding_adapter_version`。应用预处理变化时应修改 `application_index_version`。
+
+已有安装请按以下顺序部署：
+
+```bash
+bin/rails generate maglev:upgrade_index_version
+bin/rails db:migrate
+bin/rails maglev:reindex_all
+```
+
+升级 migration 会添加可空的 `index_version`；完整重建索引完成前，旧记录不会参与检索。如果 embedding 维度变化，还必须先单独迁移 pgvector 向量列的维度，并重建余弦 HNSW 索引，再执行全量重建。仅修改配置不会调整数据库向量列或索引。
+
 PostgreSQL 与 pgvector 是默认的生产环境方案。对于需要其他存储后端的应用，Maglev 也提供了精简的协议：
 
 ```ruby
 class MyVectorStore < Maglev::VectorStores::Base
+  def fetch(ids:)
+    # 返回这些稳定逻辑 ID 对应的已有文档
+  end
+
   def upsert(documents:)
     # 使用 document.id 持久化或替换文档
   end
@@ -337,6 +355,10 @@ class MyVectorStore < Maglev::VectorStores::Base
     # 删除属于该所有者的所有文档
   end
 
+  def replace_owner(owner_type:, owner_id:, documents:)
+    # 原子替换该所有者的完整可搜索 generation
+  end
+
   def healthcheck = :ok
   def capabilities = {metadata_filtering: true}
 end
@@ -347,6 +369,8 @@ end
 ```
 
 `Maglev::VectorStores::Memory` 适合测试和本地实验。自定义存储应保留文档元数据筛选能力和稳定的文档标识语义。
+
+第三方向量存储必须实现 `fetch(ids:)` 和原子的 `replace_owner`。替换失败时必须完整保留上一代文档；同一所有者的并发替换与删除必须可线性化。由 `delete_by_owner` 后接 `upsert` 组成的 fallback 并不原子，因此不安全。
 
 自定义向量存储目前会收到模型和所有者元数据筛选条件，但不会收到已配置的授权作用域。`ask` 仍会逐条授权检索到的所有者；使用自定义存储时，不能将直接 `search(..., user:)` 视为已按授权过滤。需要时请在自定义存储内部应用租户或策略筛选；如果搜索必须遵守授权作用域，请使用默认 pgvector 路径。
 

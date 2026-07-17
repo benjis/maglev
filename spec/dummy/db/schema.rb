@@ -116,6 +116,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_15_000100) do
     t.text "content", null: false
     t.string "content_checksum", null: false
     t.string "embedding_model", null: false
+    t.string "index_version", limit: 64, null: false
     t.vector "embedding", limit: 3, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
