@@ -4,16 +4,24 @@ module Maglev
   class Chunker
     ALGORITHM_VERSION = "1"
 
-    def initialize(max_characters: Maglev.configuration.chunk_size)
+    def initialize(max_characters: Maglev.configuration.chunk_size, max_chunks: Maglev.configuration.snapshot_max_chunks)
       unless max_characters.is_a?(Integer) && max_characters.positive?
         raise ArgumentError, "max_characters must be positive"
       end
 
       @max_characters = max_characters
+      if max_chunks && !max_chunks.is_a?(Integer)
+        raise ArgumentError, "max_chunks must be a positive Integer or nil"
+      end
+      if max_chunks && !max_chunks.positive?
+        raise ArgumentError, "max_chunks must be a positive Integer or nil"
+      end
+      @max_chunks = max_chunks
     end
 
     def call(text)
-      text.to_s.split(/\n{2,}/).flat_map { |part| split_part(part.strip) }.reject(&:empty?)
+      chunks = text.to_s.split(/\n{2,}/).flat_map { |part| split_part(part.strip) }.reject(&:empty?)
+      @max_chunks ? chunks.first(@max_chunks) : chunks
     end
 
     private

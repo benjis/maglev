@@ -72,4 +72,27 @@ RSpec.describe "Maglev ActiveRecord extension" do
     expect(KnowledgeCustomer.maglev_config.exposed_attributes).to eq(["industry"])
     expect(KnowledgeCustomer._save_callbacks.count).to eq(callback_count_before)
   end
+
+  it "exposes immutable snapshot budget metadata without provider calls" do
+    Maglev.configuration.snapshot_attribute_max_characters = 3
+    Maglev.configuration.chunk_size = 5
+    Maglev.configuration.snapshot_max_chunks = 1
+    KnowledgeCustomer.has_knowledge { expose :name }
+    customer = KnowledgeCustomer.allocate
+    customer.id = 1
+    customer.name = "long name"
+
+    result = customer.maglev_snapshot_result
+    preview = customer.maglev_context_preview
+
+    expect(result.metadata[:truncated]).to be(true)
+    expect(preview.metadata).to include(provider_calls: 0, truncated: true)
+    expect(result.metadata[:sources]).to include(
+      include(kind: :chunks, path: "snapshot.chunks", original_chunks: be > 1, retained_chunks: 1)
+    )
+  ensure
+    Maglev.configuration.snapshot_attribute_max_characters = 20_000
+    Maglev.configuration.chunk_size = 1_500
+    Maglev.configuration.snapshot_max_chunks = 100
+  end
 end

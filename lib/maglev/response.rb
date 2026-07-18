@@ -4,11 +4,11 @@ module Maglev
   class Response
     attr_reader :text, :sources, :metadata
 
-    def self.insufficient_context(question:)
+    def self.insufficient_context(question:, retrieval_metadata: {})
       new(
         text: "Insufficient context to answer the question.",
         sources: [],
-        metadata: {question: question, reason: "insufficient_context"}
+        metadata: {question: question, reason: "insufficient_context"}.merge(retrieval_metadata)
       )
     end
 

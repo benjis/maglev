@@ -28,27 +28,33 @@ module Maglev
 
       def register_active_storage
         return unless defined?(ActiveStorage::Attachment)
-        return if ActiveStorage::Attachment.method_defined?(:maglev_reindex_attachment_owner)
 
         ActiveStorage::Attachment.class_eval do
-          def maglev_reindex_attachment_owner
-            Maglev::ContentSourceGraph.reindex_attachment_owner(self)
+          unless method_defined?(:maglev_reindex_attachment_owner)
+            def maglev_reindex_attachment_owner
+              Maglev::ContentSourceGraph.reindex_attachment_owner(self)
+            end
           end
 
-          after_commit :maglev_reindex_attachment_owner, on: %i[create destroy]
+          unless _commit_callbacks.any? { |callback| callback.filter == :maglev_reindex_attachment_owner }
+            after_commit :maglev_reindex_attachment_owner, on: %i[create destroy]
+          end
         end
       end
 
       def register_action_text
         return unless defined?(ActionText::RichText)
-        return if ActionText::RichText.method_defined?(:maglev_reindex_rich_text_owner)
 
         ActionText::RichText.class_eval do
-          def maglev_reindex_rich_text_owner
-            Maglev::ContentSourceGraph.reindex_rich_text_owner(self)
+          unless method_defined?(:maglev_reindex_rich_text_owner)
+            def maglev_reindex_rich_text_owner
+              Maglev::ContentSourceGraph.reindex_rich_text_owner(self)
+            end
           end
 
-          after_commit :maglev_reindex_rich_text_owner, on: %i[create update destroy]
+          unless _commit_callbacks.any? { |callback| callback.filter == :maglev_reindex_rich_text_owner }
+            after_commit :maglev_reindex_rich_text_owner, on: %i[create update destroy]
+          end
         end
       end
 

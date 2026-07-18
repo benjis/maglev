@@ -8,5 +8,10 @@ log/
 docs/
 TODO.md
 AGENTS.md
+AGENTS_HANDOFF.md
+IMPLEMENTATION_PLAN.md
+scope.md
 .codegraph/
+.handoff/
 spec/guardrails/
+

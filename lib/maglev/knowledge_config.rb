@@ -4,9 +4,9 @@ require_relative "errors"
 
 module Maglev
   class KnowledgeConfig
-    Relation = Struct.new(:name, :depth, :limit, :inverse) do
-      def initialize(name:, depth:, limit:, inverse: nil)
-        super(name.to_s, depth, limit, inverse&.to_s)
+    Relation = Struct.new(:name, :depth, :limit, :inverse, :order) do
+      def initialize(name:, depth:, limit:, inverse: nil, order: nil)
+        super(name.to_s, depth, limit, inverse&.to_s, order&.dup&.freeze)
         freeze
       end
     end
@@ -97,8 +97,9 @@ module Maglev
         @tags.concat(tags)
       end
 
-      def include_related(association, depth:, limit:, inverse: nil)
-        @relations << Relation.new(name: association, depth: depth, limit: limit, inverse: inverse)
+      def include_related(association, depth:, limit:, inverse: nil, order: nil)
+        normalized_order = normalize_order(order)
+        @relations << Relation.new(name: association, depth: depth, limit: limit, inverse: inverse, order: normalized_order)
       end
 
       def expose_attached(*names)
@@ -130,6 +131,27 @@ module Maglev
 
       def normalize(values)
         values.map(&:to_s).uniq
+      end
+
+      VALID_DIRECTIONS = %i[asc desc].freeze
+
+      def normalize_order(order)
+        return nil if order.nil?
+
+        case order
+        when Symbol, String
+          {order.to_sym => :asc}
+        when Hash
+          raise ConfigurationError, "Maglev relation order Hash cannot be empty" if order.empty?
+
+          order.each do |column, direction|
+            raise ConfigurationError, "Maglev relation order direction must be :asc or :desc, got: #{direction.inspect}" unless VALID_DIRECTIONS.include?(direction)
+            raise ConfigurationError, "Maglev relation order column must be a Symbol or String, got: #{column.inspect}" unless column.is_a?(Symbol) || column.is_a?(String)
+          end
+          order.to_h { |col, dir| [col.to_sym, dir.to_sym] }
+        else
+          raise ConfigurationError, "Maglev relation order must be a Symbol, String, or Hash, got: #{order.class}"
+        end
       end
     end
   end

@@ -3,24 +3,30 @@
 require "cgi"
 
 require_relative "attachment_extractor"
+require_relative "relation_order"
 require_relative "snapshot"
+require_relative "snapshot_budget"
 
 module Maglev
   class SnapshotBuilder
-    def initialize(record, config, path: nil, visited: nil, attachment_extractor: nil, remaining_depth: Maglev.configuration.max_relation_depth)
+    def initialize(record, config, path: nil, visited: nil, attachment_extractor: nil, remaining_depth: Maglev.configuration.max_relation_depth, budget: nil)
       @record = record
       @config = config
       @path = path
       @visited = visited || {}
       @attachment_extractor = attachment_extractor || Maglev.configuration.attachment_extractor || AttachmentExtractor.new
       @remaining_depth = remaining_depth
+      @budget = budget || SnapshotBudget.new
     end
 
     def build
       return Snapshot.new([]) if visited?
 
       mark_visited
-      Snapshot.new(lines)
+      raw_lines = lines
+      text = raw_lines.join("\n")
+      text = @budget.truncate(text, kind: :whole_snapshot, path: "snapshot") unless @path
+      Snapshot.new(text.lines(chomp: true), metadata: @budget.metadata)
     end
 
     private
@@ -49,7 +55,10 @@ module Maglev
     def attribute_lines
       @config.exposed_attributes.filter_map do |attribute|
         value = @record.public_send(attribute)
-        "#{attribute_path(attribute)}: #{value}" unless value.nil?
+        next if value.nil?
+
+        text = @budget.truncate(value, kind: :attribute, path: attribute_path(attribute))
+        "#{attribute_path(attribute)}: #{text}"
       end
     end
 
@@ -67,14 +76,16 @@ module Maglev
         relation_records, collection = relation_records(relation)
         relation_records.each_with_index.flat_map do |related_record, index|
           relation_path = path_for(relation, index, collection: collection)
-          SnapshotBuilder.new(
+          child = SnapshotBuilder.new(
             related_record,
             related_record.class.maglev_config,
             path: relation_path,
             visited: @visited,
             attachment_extractor: @attachment_extractor,
-            remaining_depth: remaining_depth
-          ).build.to_s.split("\n")
+            remaining_depth: remaining_depth,
+            budget: @budget
+          ).build.to_s
+          @budget.truncate(child, kind: :related_record, path: relation_path).split("\n")
         end
       end
     end
@@ -84,7 +95,9 @@ module Maglev
         attachment_blobs(source.name).flat_map do |blob|
           document = extract_attachment(source.name, blob)
           if document.extracted?
-            ["#{document.source_identifier}.text: #{document.text}"]
+            path = document.source_identifier
+            text = @budget.truncate(document.text, kind: :attachment, path: path)
+            ["#{path}.text: #{text}"]
           else
             ["#{document.source_identifier}.skipped: #{document.metadata[:reason]}"]
           end
@@ -125,7 +138,9 @@ module Maglev
     def rich_text_lines
       @config.rich_text_sources.filter_map do |source|
         text = rich_text_value(source.name)
-        "#{rich_text_identifier(source.name)}.text: #{text}" unless text.nil? || text.empty?
+        path = rich_text_identifier(source.name)
+        text = @budget.truncate(text, kind: :rich_text, path: path) unless text.nil?
+        "#{path}.text: #{text}" unless text.nil? || text.empty?
       end
     end
 
@@ -170,11 +185,11 @@ module Maglev
       records, collection = if value.nil?
         [[], false]
       elsif loaded_collection_proxy?(value)
-        [ordered_loaded_records(value), true]
+        [relation.order ? ordered_array(value.target, relation) : ordered_loaded_records(value), true]
       elsif active_record_relation?(value)
-        [ordered_relation(value).limit(relation.limit).to_a, true]
+        [ordered_relation(value, relation).limit(relation.limit).to_a, true]
       elsif value.respond_to?(:to_ary)
-        [value.to_ary, true]
+        [ordered_array(value.to_ary, relation), true]
       else
         [[value], false]
       end
@@ -192,11 +207,44 @@ module Maglev
         value.is_a?(ActiveRecord::Associations::CollectionProxy) && value.loaded?
     end
 
-    def ordered_relation(value)
+    def ordered_relation(value, relation)
+      if relation.order
+        order = effective_order(relation.order, value.klass)
+        return value.reorder(order)
+      end
       return value unless value.order_values.empty?
 
       primary_key = value.klass.primary_key
       primary_key ? value.order(primary_key => :asc) : value
+    end
+
+    def effective_order(order, klass)
+      RelationOrder.with_primary_key(order, klass)
+    end
+
+    def ordered_array(records, relation)
+      return records unless relation.order
+
+      order = relation.order
+      records.sort do |left, right|
+        comparison = order.lazy.map do |attribute, direction|
+          value = compare_values(left.public_send(attribute), right.public_send(attribute))
+          (direction == :desc) ? -value : value
+        end.find { |value| !value.zero? } || 0
+        comparison.zero? ? compare_values(record_id_for(left), record_id_for(right)) : comparison
+      end
+    end
+
+    def compare_values(left, right)
+      return 0 if left == right
+      return -1 if left.nil?
+      return 1 if right.nil?
+
+      left <=> right
+    end
+
+    def record_id_for(record)
+      record.respond_to?(:id) ? record.id : record.object_id
     end
 
     def ordered_loaded_records(value)

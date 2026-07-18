@@ -130,6 +130,7 @@ Make sure your Active Job backend is running in production.
 results = Product.search(
   "laptops with battery or usability complaints",
   limit: 10,
+  minimum_similarity: 0.65,
   user: current_user
 )
 
@@ -148,6 +149,8 @@ Generate an answer grounded in the retrieved records:
 response = Product.ask(
   "What recurring product issues should the merchandising team investigate?",
   limit: 5,
+  chunks_per_owner: 2,
+  minimum_similarity: 0.65,
   user: current_user
 )
 
@@ -171,7 +174,15 @@ review.update!(product: replacement_product)
 # Maglev::ReindexJob is queued for both affected products.
 ```
 
-When retrieval yields no usable context, Maglev returns a deterministic insufficient-context response instead of asking the model to improvise.
+For model-level `ask`, `limit` is the maximum owner count and
+`chunks_per_owner` is the maximum evidence chunks retained per selected owner.
+Model-level `search` always returns at most one result per owner. Instance
+`ask` remains owner-scoped and treats `limit` as its chunk limit.
+
+`minimum_similarity` is inclusive and normalized to `0.0..1.0`; a request value
+overrides `config.minimum_similarity`. If every bounded candidate is rejected,
+Maglev returns deterministic insufficient context with examined, accepted,
+rejected, threshold, and best-similarity metadata without calling generation.
 
 ## How It Works
 
@@ -208,10 +219,16 @@ Maglev does not duplicate your relational model. Vector documents point back to 
 
 ```ruby
 has_knowledge do
-  include_related :tickets, depth: 2, limit: 25
+  include_related :tickets, depth: 2, limit: 25, order: {created_at: :desc}
   include_related :events, depth: 1, limit: 20, inverse: :eventable
 end
 ```
+
+`order:` accepts a related attribute or an attribute-to-`:asc`/`:desc` Hash.
+It is validated and overrides association order; otherwise association order is
+preserved, with primary-key ascending as the fallback. Limits apply after
+ordering. `maglev_schema` exposes resolved depth, limit, inverse, order, macro,
+and related-model metadata.
 
 When a related record moves between owners, Maglev reindexes both the previous and current owner.
 
@@ -227,6 +244,14 @@ end
 ```
 
 HTML and Action Text content are sanitized before indexing. Attachments are constrained by content type, byte size, and extracted character count. Changes to declared attachments and rich text trigger owner reindexing.
+
+The default extractor is text-only: plain text, Markdown, HTML, and XHTML. HTML
+is deterministically sanitized; unsupported or oversized blobs are skipped with
+metadata, and extracted text is bounded. It is not a PDF, Office, image, or OCR
+parser. A custom `config.attachment_extractor` must implement
+`extract(blob, source_name:)` and return `Maglev::ExtractedDocument`. External
+parsers remain application-owned and should preserve equivalent safety,
+deterministic bounds, and failure isolation.
 
 ### Inspect before indexing
 
@@ -294,6 +319,12 @@ Maglev.configure do |config|
   config.context_max_characters = 4000
   config.context_per_owner_characters = 1200
   config.max_relation_depth = 3
+  config.minimum_similarity = nil
+
+  config.snapshot_attribute_max_characters = 20_000
+  config.snapshot_related_record_max_characters = 50_000
+  config.snapshot_max_characters = 100_000
+  config.snapshot_max_chunks = 100
 
   config.attachment_allowed_content_types = [
     "text/plain",
@@ -310,6 +341,11 @@ end
 ```
 
 `provider_timeout` applies to each provider attempt. Timed-out attempts are retryable and count toward `provider_max_attempts`.
+
+Direct queries retry synchronously. `Maglev::ReindexJob` instead gives each
+provider call one synchronous attempt and uses `provider_max_attempts` as its
+total Active Job execution budget, emitting distinct retry, discard, and
+exhaustion notifications without multiplying attempts.
 
 The built-in provider implementation is intentionally a thin OpenAI-compatible HTTP bridge. It supports embeddings and non-streaming chat completions only; streaming, tool calling, multimodal requests, structured output, and provider-specific model discovery are outside the current RAG-only release.
 
@@ -372,7 +408,7 @@ end
 
 Third-party stores must implement `fetch(ids:)` and an atomic `replace_owner`. Failed replacement must preserve the previous complete generation, and concurrent replacement/deletion for one owner must be linearizable. A fallback composed of `delete_by_owner` followed by `upsert` is not atomic and is not safe.
 
-Custom vector stores currently receive model and owner metadata filters, but not the configured authorization scope. `ask` still authorizes retrieved owners individually; direct `search(..., user:)` with a custom store must not be treated as authorization-filtered. Apply tenant or policy filtering inside the custom store, or use the default pgvector path when authorization-scoped search is required.
+Custom vector stores receive model and owner metadata filters, but not the configured authorization scope. Maglev applies bounded post-fetch owner authorization before returning direct `search(..., user:)` results or assembling `ask` context. Because that filter cannot replace candidates beyond the bounded fetch, stores should still push tenant or policy filtering into their own search implementation when complete authorization-scoped result filling is required; the default pgvector path performs that scope in the database.
 
 ## Operations and Observability
 

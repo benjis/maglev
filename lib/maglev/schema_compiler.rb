@@ -2,13 +2,14 @@
 
 require_relative "configuration"
 require_relative "errors"
+require_relative "relation_order"
 
 module Maglev
   class SchemaCompiler
     SUPPORTED_MACROS = %i[belongs_to has_one has_many].freeze
 
     CompiledSchema = Struct.new(:model_class, :relations)
-    CompiledRelation = Struct.new(:name, :depth, :limit, :inverse, :macro, :related_class)
+    CompiledRelation = Struct.new(:name, :depth, :limit, :inverse, :macro, :related_class, :order)
 
     def initialize(config, max_depth: Maglev.configuration.max_relation_depth)
       @config = config
@@ -16,7 +17,7 @@ module Maglev
     end
 
     def compile
-      CompiledSchema.new(@config.model_class, @config.relations.map { |relation| compile_relation(relation) }.freeze)
+      CompiledSchema.new(@config.model_class, @config.relations.map { |relation| compile_relation(relation) }.freeze).freeze
     end
 
     private
@@ -45,7 +46,19 @@ module Maglev
         raise ConfigurationError, "Maglev association #{@config.model_class.name}.#{relation.name} requires an inverse for invalidation"
       end
 
-      CompiledRelation.new(relation.name, relation.depth, relation.limit, inverse, reflection.macro, related_class)
+      order = compiled_order(relation.order, related_class)
+      CompiledRelation.new(relation.name, relation.depth, relation.limit, inverse, reflection.macro, related_class, order).freeze
+    end
+
+    def compiled_order(order, related_class)
+      return nil unless order
+
+      unknown = order.keys.map(&:to_s) - related_class.attribute_names.map(&:to_s)
+      if unknown.any?
+        raise ConfigurationError, "Unknown Maglev relation order attributes for #{related_class.name}: #{unknown.join(", ")}"
+      end
+
+      RelationOrder.with_primary_key(order, related_class)
     end
   end
 end

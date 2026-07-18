@@ -22,7 +22,7 @@ module Maglev
     )
     private_constant :IdentityConfiguration
 
-    def initialize(record, chunk_model: Chunk, embedding_adapter: Maglev.configuration.embedding_adapter, embedding_dimensions: Maglev.configuration.embedding_dimensions, chunk_size: Maglev.configuration.chunk_size, vector_store: Maglev.configuration.vector_store, index_identity: nil)
+    def initialize(record, chunk_model: Chunk, embedding_adapter: Maglev.configuration.embedding_adapter, embedding_dimensions: Maglev.configuration.embedding_dimensions, chunk_size: Maglev.configuration.chunk_size, vector_store: Maglev.configuration.vector_store, index_identity: nil, provider_call: ProviderCall.new)
       @record = record
       @chunk_model = chunk_model
       @embedding_adapter = embedding_adapter || Adapters::FaradayEmbedding.new
@@ -30,6 +30,7 @@ module Maglev
       @chunk_size = chunk_size
       @vector_store = vector_store
       @index_identity = index_identity
+      @provider_call = provider_call
     end
 
     def index
@@ -37,17 +38,41 @@ module Maglev
       validate_storage_dimensions!
       prepare_index_identity
       ActiveSupport::Notifications.instrument("maglev.index.start", owner_type: @record.class.name, owner_id: @record.id)
+      @embedding_count = 0
 
+      index_metadata = nil
       chunk_count = loop do
-        snapshot = @record.maglev_snapshot
-        chunks = Chunker.new(max_characters: @chunk_size).call(snapshot)
+        snapshot_result = if @record.respond_to?(:maglev_snapshot_result) && @record.class.respond_to?(:maglev_config) && @record.class.maglev_config
+          @record.maglev_snapshot_result
+        end
+        snapshot = snapshot_result ? snapshot_result.to_s : @record.maglev_snapshot
+        all_chunks = Chunker.new(max_characters: @chunk_size, max_chunks: nil).call(snapshot)
+        chunks = all_chunks.first(Maglev.configuration.snapshot_max_chunks)
+        budget_metadata = snapshot_result&.metadata || {truncated: false, sources: []}
+        if all_chunks.length > chunks.length && budget_metadata.fetch(:sources, []).none? { |source| source[:kind] == :chunks }
+          budget_metadata = budget_metadata.merge(
+            truncated: true,
+            sources: budget_metadata.fetch(:sources, []) + [{
+              kind: :chunks,
+              path: "snapshot.chunks",
+              original_chunks: all_chunks.length,
+              retained_chunks: chunks.length
+            }]
+          )
+        end
+        index_metadata = budget_metadata.merge(
+          original_chunk_count: all_chunks.length,
+          retained_chunk_count: chunks.length,
+          chunk_limit: Maglev.configuration.snapshot_max_chunks
+        )
+        index_metadata = deep_freeze(index_metadata)
         prepared = @vector_store ? prepare_documents(chunks) : prepare_chunks(chunks)
         break chunks.length if persist_if_current(snapshot, prepared)
       end
 
-      ActiveSupport::Notifications.instrument("maglev.index.success", owner_type: @record.class.name, owner_id: @record.id, chunk_count: chunk_count)
+      ActiveSupport::Notifications.instrument("maglev.index.success", owner_type: @record.class.name, owner_id: @record.id, chunk_count: chunk_count, budget: index_metadata)
     rescue => error
-      ActiveSupport::Notifications.instrument("maglev.index.failure", owner_type: @record.class.name, owner_id: @record.id, error_class: error.class.name)
+      ActiveSupport::Notifications.instrument("maglev.index.failure", owner_type: @record.class.name, owner_id: @record.id, error_class: error.class.name, budget: index_metadata)
       raise
     end
 
@@ -173,9 +198,29 @@ module Maglev
     end
 
     def embed(content)
-      embedding = ProviderCall.new.call(operation: "embed") { @embedding_adapter.embed(content) }
+      embedding = @provider_call.call(operation: "embed") { perform_embedding(content) }
       validate_embedding!(embedding)
       embedding
+    end
+
+    def perform_embedding(content)
+      if @embedding_count >= Maglev.configuration.snapshot_max_chunks
+        raise RetryableProviderError, "snapshot changed while indexing and exhausted the per-execution embedding budget"
+      end
+
+      @embedding_count += 1
+      @embedding_adapter.embed(content)
+    end
+
+    def deep_freeze(value)
+      case value
+      when Hash
+        value.to_h { |key, item| [key, deep_freeze(item)] }.freeze
+      when Array
+        value.map { |item| deep_freeze(item) }.freeze
+      else
+        value.freeze
+      end
     end
 
     def prepare_index_identity

@@ -130,6 +130,7 @@ bin/rails maglev:reindex_all
 results = Product.search(
   "存在续航或易用性问题的笔记本电脑",
   limit: 10,
+  minimum_similarity: 0.65,
   user: current_user
 )
 
@@ -148,6 +149,8 @@ end
 response = Product.ask(
   "商品团队应调查哪些反复出现的产品问题？",
   limit: 5,
+  chunks_per_owner: 2,
+  minimum_similarity: 0.65,
   user: current_user
 )
 
@@ -171,7 +174,13 @@ review.update!(product: replacement_product)
 # 两个受影响的产品都会加入 Maglev::ReindexJob 队列。
 ```
 
-如果没有检索到可用上下文，Maglev 会返回确定性的“上下文不足”响应，而不会让模型自行猜测。
+模型级 `ask` 中，`limit` 表示最多选择的 owner 数量，`chunks_per_owner`
+表示每个 owner 最多保留的证据 chunk 数量。模型级 `search` 对每个 owner 最多
+返回一条结果；实例级 `ask` 仍只针对单个 owner，`limit` 表示 chunk 上限。
+
+`minimum_similarity` 使用包含边界的 `0.0..1.0` 归一化分数；请求值会覆盖
+`config.minimum_similarity`。若所有有限候选均被拒绝，Maglev 不会调用生成模型，
+而会返回确定性的上下文不足响应及检查、接受、拒绝数量、阈值和最佳相似度。
 
 ## 工作原理
 
@@ -208,10 +217,15 @@ Maglev 不会复制你的关系数据模型。向量文档会指回对应的 Act
 
 ```ruby
 has_knowledge do
-  include_related :tickets, depth: 2, limit: 25
+  include_related :tickets, depth: 2, limit: 25, order: {created_at: :desc}
   include_related :events, depth: 1, limit: 20, inverse: :eventable
 end
 ```
+
+`order:` 可接受关联属性，或属性到 `:asc`/`:desc` 的 Hash。属性会经过验证；DSL
+顺序优先于 association 顺序，否则保留 association 顺序，并以主键升序作为回退。
+`limit` 在排序后应用。`maglev_schema` 会公开解析后的 depth、limit、inverse、
+order、macro 与关联模型 metadata。
 
 当关联记录从一个所有者转移到另一个所有者时，Maglev 会同时重新索引旧所有者和新所有者。
 
@@ -227,6 +241,12 @@ end
 ```
 
 HTML 和 Action Text 内容会在索引前进行清洗。附件会受到内容类型、字节大小和提取字符数限制。已声明附件和富文本的变化会触发所有者重新索引。
+
+默认提取器仅支持纯文本、Markdown、HTML 与 XHTML；HTML 会确定性清理。
+不支持或超大的 blob 会带 metadata 跳过，提取文本也受上限约束。它不是 PDF、
+Office、图片或 OCR 解析器。自定义 `config.attachment_extractor` 必须实现
+`extract(blob, source_name:)` 并返回 `Maglev::ExtractedDocument`。外部解析器由
+应用负责，并应维持等价的安全检查、确定性边界与失败隔离。
 
 ### 在索引前检查内容
 
@@ -294,6 +314,12 @@ Maglev.configure do |config|
   config.context_max_characters = 4000
   config.context_per_owner_characters = 1200
   config.max_relation_depth = 3
+  config.minimum_similarity = nil
+
+  config.snapshot_attribute_max_characters = 20_000
+  config.snapshot_related_record_max_characters = 50_000
+  config.snapshot_max_characters = 100_000
+  config.snapshot_max_chunks = 100
 
   config.attachment_allowed_content_types = [
     "text/plain",
@@ -310,6 +336,10 @@ end
 ```
 
 `provider_timeout` 对每次 provider 尝试分别生效。超时会被视为可重试错误，并计入 `provider_max_attempts`。
+
+直接查询会同步重试。`Maglev::ReindexJob` 则让每个 provider 调用只进行一次同步
+尝试，并把 `provider_max_attempts` 作为 Active Job 的总执行预算，分别发送重试、
+丢弃和耗尽通知，避免尝试次数相乘。
 
 内置 provider 实现刻意保持为精简的 OpenAI-compatible HTTP bridge，只支持 embedding 与非流式 chat completion。Streaming、tool calling、多模态请求、structured output 和 provider-specific model discovery 均不属于当前 RAG-only release。
 
@@ -372,7 +402,7 @@ end
 
 第三方向量存储必须实现 `fetch(ids:)` 和原子的 `replace_owner`。替换失败时必须完整保留上一代文档；同一所有者的并发替换与删除必须可线性化。由 `delete_by_owner` 后接 `upsert` 组成的 fallback 并不原子，因此不安全。
 
-自定义向量存储目前会收到模型和所有者元数据筛选条件，但不会收到已配置的授权作用域。`ask` 仍会逐条授权检索到的所有者；使用自定义存储时，不能将直接 `search(..., user:)` 视为已按授权过滤。需要时请在自定义存储内部应用租户或策略筛选；如果搜索必须遵守授权作用域，请使用默认 pgvector 路径。
+自定义向量存储会收到模型和所有者元数据筛选条件，但不会收到已配置的授权作用域。Maglev 会在有限候选获取后逐条授权所有者，再返回直接 `search(..., user:)` 结果或组装 `ask` 上下文。由于该过滤无法在有限候选之外补充替代结果，如果需要完整填充按授权限定的结果，自定义存储仍应在自身搜索实现中下推租户或策略条件；默认 pgvector 路径会在数据库中应用该作用域。
 
 ## 运维与可观测性
 

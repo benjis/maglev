@@ -12,6 +12,13 @@ module Maglev
       end
     end
 
+    initializer "maglev.reloader" do
+      config.to_prepare do
+        Maglev::DependencyGraph.reset!
+        Maglev::KnowledgeRegistry.rebuild!
+      end
+    end
+
     rake_tasks do
       load "tasks/maglev.rake"
     end

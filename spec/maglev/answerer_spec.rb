@@ -3,6 +3,7 @@
 require "spec_helper"
 require "maglev/answerer"
 require "maglev/search_result"
+require "maglev/retrieval_outcome"
 
 class AnswerCustomer
   def self.name
@@ -24,9 +25,16 @@ class FakeAnswerRetriever
     @calls = []
   end
 
-  def search(query, limit:, owner: nil)
-    @calls << {query: query, limit: limit, owner: owner}
-    @results
+  def retrieval_outcome(query, limit:, owner: nil, user: nil, minimum_similarity: nil, chunks_per_owner: 1)
+    @calls << {query: query, limit: limit, owner: owner, minimum_similarity: minimum_similarity, chunks_per_owner: chunks_per_owner}
+    Maglev::RetrievalOutcome.new(
+      results: @results,
+      minimum_similarity: minimum_similarity,
+      examined_count: @results.size,
+      accepted_count: @results.size,
+      rejected_count: 0,
+      best_similarity: @results.filter_map(&:similarity).max
+    )
   end
 end
 
@@ -55,7 +63,7 @@ RSpec.describe Maglev::Answerer do
     response = described_class.new(AnswerCustomer, retriever: retriever, generation_adapter: generator)
       .ask("Who is at risk?", limit: 5)
 
-    expect(retriever.calls).to eq([{query: "Who is at risk?", limit: 5, owner: nil}])
+    expect(retriever.calls).to eq([{query: "Who is at risk?", limit: 5, owner: nil, minimum_similarity: nil, chunks_per_owner: 1}])
     expect(generator.prompts.first).to include("Who is at risk?")
     expect(generator.prompts.first).to include("[S1] AnswerCustomer#42")
     expect(response.text).to eq("Customer 42 is at risk [S1].")
@@ -72,7 +80,7 @@ RSpec.describe Maglev::Answerer do
     described_class.new(AnswerCustomer, retriever: retriever, generation_adapter: FakeAnswerGenerationAdapter.new)
       .ask("Why unhappy?", limit: 3, owner: customer)
 
-    expect(retriever.calls).to eq([{query: "Why unhappy?", limit: 3, owner: customer}])
+    expect(retriever.calls).to eq([{query: "Why unhappy?", limit: 3, owner: customer, minimum_similarity: nil, chunks_per_owner: 1}])
   end
 
   it "includes multiple retrieved chunks for an instance question" do

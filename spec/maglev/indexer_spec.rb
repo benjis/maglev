@@ -216,6 +216,75 @@ RSpec.describe Maglev::Indexer do
 
     expect(FakeChunk.rows).to be_empty
   end
+
+  it "never embeds more than the configured maximum chunks" do
+    Maglev.configuration.snapshot_max_chunks = 2
+    adapter = FakeEmbeddingAdapter.new(dimensions: 3)
+    record = FakeIndexedRecord.new(id: 7, name: "Acme", description: ("word " * 100))
+
+    described_class.new(record, chunk_model: FakeChunk, embedding_adapter: adapter, embedding_dimensions: 3, chunk_size: 20).index
+
+    expect(adapter.calls.size).to eq(2)
+  end
+
+  it "enforces the embedding cap across snapshot-current retries" do
+    Maglev.configuration.snapshot_max_chunks = 2
+    adapter = FakeEmbeddingAdapter.new(dimensions: 3)
+    record = FakeIndexedRecord.new(id: 7, name: "Acme", description: "word " * 100)
+    snapshots = ["first chunk second", "changed chunk content", "changed chunk content"]
+    allow(record).to receive(:maglev_snapshot) { snapshots.shift || "changed chunk content" }
+
+    expect do
+      described_class.new(record, chunk_model: FakeChunk, embedding_adapter: adapter, embedding_dimensions: 3, chunk_size: 12).index
+    end.to raise_error(Maglev::RetryableProviderError, /embedding budget/)
+
+    expect(adapter.calls.size).to eq(2)
+  end
+
+  it "counts synchronous provider retries against the same embedding cap" do
+    Maglev.configuration.snapshot_max_chunks = 2
+    Maglev.configuration.provider_max_attempts = 4
+    adapter = FakeEmbeddingAdapter.new(dimensions: 3)
+    allow(adapter).to receive(:embed) do |text|
+      adapter.calls << text
+      raise Maglev::RetryableProviderError, "timeout"
+    end
+    record = FakeIndexedRecord.new(id: 7, name: "Acme", description: "Support problems")
+
+    expect do
+      described_class.new(record, chunk_model: FakeChunk, embedding_adapter: adapter, embedding_dimensions: 3).index
+    end.to raise_error(Maglev::RetryableProviderError)
+
+    expect(adapter.calls.size).to eq(2)
+  end
+
+  it "includes path-specific budget metadata in success and failure notifications" do
+    Maglev.configuration.snapshot_max_chunks = 1
+    adapter = FakeEmbeddingAdapter.new(dimensions: 3)
+    record = FakeIndexedRecord.new(id: 7, name: "Acme", description: "word " * 30)
+    events = []
+    subscriptions = %w[maglev.index.success maglev.index.failure].map do |name|
+      ActiveSupport::Notifications.subscribe(name) { |*args| events << [name, args.last] }
+    end
+
+    described_class.new(record, chunk_model: FakeChunk, embedding_adapter: adapter, embedding_dimensions: 3, chunk_size: 15).index
+    failing = FakeEmbeddingAdapter.new(dimensions: 2)
+    expect do
+      described_class.new(record, chunk_model: FakeChunk, embedding_adapter: failing, embedding_dimensions: 3, chunk_size: 15, index_identity: instance_double(Maglev::IndexIdentity, to_s: "x" * 64)).index
+    end.to raise_error(Maglev::ConfigurationError)
+
+    expect(events.map(&:first)).to include("maglev.index.success", "maglev.index.failure")
+    events.each do |_name, payload|
+      expect(payload[:budget]).to be_frozen
+      expect(payload[:budget][:sources]).to be_frozen
+      expect(payload[:budget][:sources].first).to be_frozen
+      expect(payload[:budget][:sources]).to include(
+        include(kind: :chunks, path: "snapshot.chunks", original_chunks: be > 1, retained_chunks: 1)
+      )
+    end
+  ensure
+    subscriptions&.each { |subscription| ActiveSupport::Notifications.unsubscribe(subscription) }
+  end
   def expect_identity_change(record, _component, second_chunk_size: 100)
     adapter = FakeEmbeddingAdapter.new(dimensions: 3)
     described_class.new(record, chunk_model: FakeChunk, embedding_adapter: adapter, embedding_dimensions: 3, chunk_size: 100).index

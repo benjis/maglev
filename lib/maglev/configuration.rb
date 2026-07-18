@@ -21,7 +21,9 @@ module Maglev
       :attachment_max_bytes, :attachment_max_characters, :authorization_adapter,
       :provider_max_attempts, :provider_timeout, :source_redactor, :logger,
       :vector_store, :embedding_adapter_id, :embedding_adapter_version,
-      :application_index_version
+      :application_index_version, :minimum_similarity,
+      :snapshot_attribute_max_characters, :snapshot_related_record_max_characters,
+      :snapshot_max_characters, :snapshot_max_chunks
 
     def initialize
       @embedding_provider = ProviderConfiguration.new(
@@ -45,6 +47,11 @@ module Maglev
       @provider_timeout = 30
       @source_redactor = nil
       @application_index_version = "1"
+      @minimum_similarity = nil
+      @snapshot_attribute_max_characters = 20_000
+      @snapshot_related_record_max_characters = 50_000
+      @snapshot_max_characters = 100_000
+      @snapshot_max_chunks = 100
     end
 
     def embedding_provider
@@ -73,6 +80,21 @@ module Maglev
 
     def generation_model=(model)
       @generation_provider.model = model
+    end
+
+    %i[
+      snapshot_attribute_max_characters
+      snapshot_related_record_max_characters
+      snapshot_max_characters
+      snapshot_max_chunks
+    ].each do |name|
+      define_method(:"#{name}=") do |value|
+        unless value.is_a?(Integer) && value.positive?
+          raise ArgumentError, "#{name} must be a positive Integer"
+        end
+
+        instance_variable_set(:"@#{name}", value)
+      end
     end
   end
 end

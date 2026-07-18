@@ -5,6 +5,7 @@ require_relative "authorization"
 require_relative "chunk"
 require_relative "index_identity"
 require_relative "provider_call"
+require_relative "retrieval_outcome"
 require_relative "search_result"
 require_relative "vector_stores/pgvector"
 
@@ -30,40 +31,115 @@ module Maglev
       @vector_store = vector_store
     end
 
-    def search(query, limit:, owner: nil, user: nil)
+    def search(query, limit:, owner: nil, user: nil, minimum_similarity: nil)
+      retrieval_outcome(
+        query,
+        limit: limit,
+        owner: owner,
+        user: user,
+        minimum_similarity: minimum_similarity,
+        chunks_per_owner: 1
+      ).results
+    end
+
+    def retrieval_outcome(query, limit:, owner: nil, user: nil, minimum_similarity: nil, chunks_per_owner: 1)
+      threshold = resolve_threshold(minimum_similarity)
+      validate_chunks_per_owner!(chunks_per_owner)
       @current_index_version = current_index_version
       embedding = ProviderCall.new.call(operation: "embed") { @embedding_adapter.embed(query) }
       validate_embedding!(embedding)
-      return search_vector_store(embedding, limit: limit, owner: owner, user: user) if @vector_store
 
-      scope = @chunk_model.where(owner_model_name: @model_class.name, index_version: @current_index_version)
-      scope = scope.where(owner: owner) if owner
-      scope = apply_authorization_scope(scope, user) unless owner
-      rows = scope
-        .nearest_neighbors(:embedding, embedding, distance: "cosine")
-        .limit(candidate_limit(limit, owner: owner))
+      bounded_limit = candidate_limit(limit, owner: owner, chunks_per_owner: chunks_per_owner)
+      candidates = search_results(fetch_candidates(embedding, owner: owner, user: user, limit: bounded_limit))
+      candidates = authorize_vector_store_results(candidates, user)
+      examined = sorted_results(candidates)
+      accepted, rejected = apply_threshold(examined, threshold)
+      projected = project_results(accepted, limit: limit, owner: owner, chunks_per_owner: chunks_per_owner)
 
-      results_for(rows, limit: limit, owner: owner)
+      RetrievalOutcome.new(
+        results: projected,
+        minimum_similarity: threshold,
+        examined_count: examined.size,
+        accepted_count: accepted.size,
+        rejected_count: rejected.size,
+        best_similarity: examined.filter_map(&:similarity).max
+      )
     end
 
     private
 
-    def search_vector_store(embedding, limit:, owner:, user:)
-      documents = @vector_store.search(
-        vector: embedding,
-        filters: filters_for(owner),
-        limit: candidate_limit(limit, owner: owner)
-      )
-      results_for(documents, limit: limit, owner: owner)
+    def resolve_threshold(request_threshold)
+      threshold = request_threshold || Maglev.configuration.minimum_similarity
+      validate_threshold!(threshold)
+      threshold
     end
 
-    def candidate_limit(limit, owner:)
-      owner ? limit : limit * OWNER_DIVERSE_OVERFETCH
+    def validate_threshold!(threshold)
+      return if threshold.nil?
+
+      unless threshold.is_a?(Numeric) && threshold.finite?
+        raise ArgumentError, "minimum_similarity must be a finite Numeric in 0.0..1.0, got: #{threshold.inspect}"
+      end
+      return if (0.0..1.0).cover?(threshold)
+
+      raise ArgumentError, "minimum_similarity must be in 0.0..1.0, got: #{threshold}"
     end
 
-    def results_for(rows, limit:, owner:)
-      results = owner ? search_results(rows) : unique_owner_results(rows)
-      results.first(limit)
+    def apply_threshold(results, threshold)
+      return [results, []] if threshold.nil?
+
+      accepted = []
+      rejected = []
+      results.each do |result|
+        similarity = result.similarity
+        if similarity && similarity >= threshold
+          accepted << result
+        else
+          rejected << result
+        end
+      end
+      [accepted, rejected]
+    end
+
+    def validate_chunks_per_owner!(value)
+      return if value.is_a?(Integer) && value.positive?
+
+      raise ArgumentError, "chunks_per_owner must be a positive Integer, got: #{value.inspect}"
+    end
+
+    def fetch_candidates(embedding, owner:, user:, limit:)
+      if @vector_store
+        return @vector_store.search(vector: embedding, filters: filters_for(owner), limit: limit)
+      end
+
+      scope = @chunk_model.where(owner_model_name: @model_class.name, index_version: @current_index_version)
+      scope = scope.where(owner: owner) if owner
+      scope = apply_authorization_scope(scope, user) unless owner
+      scope.nearest_neighbors(:embedding, embedding, distance: "cosine").limit(limit)
+    end
+
+    def project_results(results, limit:, owner:, chunks_per_owner:)
+      return results.first(limit) if owner
+
+      groups = results.group_by { |result| owner_key(result.owner) }
+      selected_owners = groups.values.sort_by { |chunks| result_sort_key(chunks.first) }.first(limit)
+      selected_owners.flat_map { |chunks| chunks.first(chunks_per_owner) }.sort_by { |result| result_sort_key(result) }
+    end
+
+    def candidate_limit(limit, owner:, chunks_per_owner: 1)
+      owner ? limit : limit * chunks_per_owner * OWNER_DIVERSE_OVERFETCH
+    end
+
+    def sorted_results(results)
+      results.sort_by { |result| result_sort_key(result) }
+    end
+
+    def result_sort_key(result)
+      [result.distance || Float::INFINITY, *owner_key(result.owner).map(&:to_s), result.chunk_index || Float::INFINITY]
+    end
+
+    def owner_key(owner)
+      [owner.class.name, owner.respond_to?(:id) ? owner.id : owner]
     end
 
     def filters_for(owner)
@@ -84,6 +160,12 @@ module Maglev
       else
         scope
       end
+    end
+
+    def authorize_vector_store_results(results, user)
+      return results unless @vector_store && @authorization.configured? && user
+
+      results.select { |result| @authorization.authorized?(record: result.owner, user: user) }
     end
 
     def current_index_version
@@ -107,16 +189,6 @@ module Maglev
 
       actual = embedding.respond_to?(:length) ? embedding.length : "unknown"
       raise ConfigurationError, "Embedding adapter returned #{actual} dimensions; expected #{@embedding_dimensions} dimensions"
-    end
-
-    def unique_owner_results(rows)
-      seen_owners = {}
-
-      search_results(rows).select do |result|
-        next false if seen_owners[result.owner]
-
-        seen_owners[result.owner] = true
-      end
     end
 
     def search_results(rows)

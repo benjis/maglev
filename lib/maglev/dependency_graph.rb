@@ -7,6 +7,10 @@ module Maglev
     Edge = Struct.new(:owner_class, :related_class, :relation_name, :inverse, :depth)
 
     class << self
+      def reset!
+        @edges = Hash.new { |hash, klass| hash[klass] = [] }
+      end
+
       def register(schema)
         schema.relations.each do |relation|
           edge = Edge.new(schema.model_class, relation.related_class, relation.name, relation.inverse, relation.depth)

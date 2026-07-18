@@ -40,6 +40,14 @@ class ContentSnapshotRichText
 end
 
 RSpec.describe Maglev::SnapshotBuilder do
+  around do |example|
+    original = Maglev.configuration
+    Maglev.instance_variable_set(:@configuration, Maglev::Configuration.new)
+    example.run
+  ensure
+    Maglev.instance_variable_set(:@configuration, original)
+  end
+
   it "includes attachment and rich-text knowledge with stable source labels" do
     record = ContentSnapshotRecord.new
     record.id = 5
@@ -69,5 +77,23 @@ RSpec.describe Maglev::SnapshotBuilder do
 
     expect(snapshot).to include("name: Acme")
     expect(snapshot).to include("contracts[blob:contract.txt].skipped: extraction_failed")
+  end
+
+  it "truncates attachment and rich-text sources through the builder with stable metadata paths" do
+    Maglev.configuration.snapshot_attribute_max_characters = 5
+    record = ContentSnapshotRecord.new
+    record.id = 5
+    record.name = "Acme"
+    record.contracts = [ContentSnapshotBlob.new("contract.txt", "text/plain", 12, "Renewal risk")]
+    record.notes = ContentSnapshotRichText.new("<p>Important note</p>")
+
+    snapshot = described_class.new(record, ContentSnapshotRecord.maglev_config).build
+
+    expect(snapshot.to_s).to include("contracts[blob:contract.txt].text: Renew")
+    expect(snapshot.to_s).to include("rich_text.notes.text: Impor")
+    expect(snapshot.metadata[:sources]).to include(
+      include(kind: :attachment, path: "contracts[blob:contract.txt]", original_characters: 12, retained_characters: 5),
+      include(kind: :rich_text, path: "rich_text.notes", original_characters: 14, retained_characters: 5)
+    )
   end
 end

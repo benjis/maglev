@@ -116,6 +116,67 @@ RSpec.describe "pgvector semantic search" do
     expect(results.first.content).to eq("closest")
   end
 
+  it "applies authorization, accepts the threshold boundary, and returns multiple chunks per stable owner" do
+    adapter = FixedPgvectorEmbeddingAdapter.new([1.0, 0.0, 0.0])
+    version = current_version(adapter)
+    allowed = PgvectorSearchOwner.create!(name: "Allowed")
+    denied = PgvectorSearchOwner.create!(name: "Denied")
+    create_chunk(allowed, index: 0, content: "allowed-0", embedding: [1.0, 0.0, 0.0], version: version)
+    create_chunk(allowed.reload, index: 1, content: "allowed-1", embedding: [1.0, 0.0, 0.0], version: version)
+    create_chunk(denied, index: 0, content: "denied", embedding: [1.0, 0.0, 0.0], version: version)
+    authorization_adapter = Class.new do
+      define_method(:scope) { |model:, user:| model.where(id: user.fetch(:owner_ids)) }
+      define_method(:authorize) { |record:, user:| user.fetch(:owner_ids).include?(record.id) }
+    end.new
+
+    sql = []
+    subscription = ActiveSupport::Notifications.subscribe("sql.active_record") do |_name, _start, _finish, _id, payload|
+      sql << payload[:sql] if payload[:sql].include?("maglev_chunks")
+    end
+    outcome = Maglev::Retriever.new(
+      PgvectorSearchOwner,
+      embedding_adapter: adapter,
+      authorization: Maglev::Authorization.new(adapter: authorization_adapter)
+    ).retrieval_outcome(
+      "nearest",
+      limit: 1,
+      user: {owner_ids: [allowed.id]},
+      minimum_similarity: 1.0,
+      chunks_per_owner: 2
+    )
+
+    expect(outcome.results.map(&:content)).to eq(%w[allowed-0 allowed-1])
+    expect(outcome.results.map { |result| [result.owner.class.name, result.owner.id] }.uniq).to eq([["PgvectorSearchOwner", allowed.id]])
+    expect(outcome).to have_attributes(examined_count: 2, accepted_count: 2, rejected_count: 0)
+    expect(sql).to include(match(/LIMIT (?:\$\d+|4)/))
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscription) if subscription
+  end
+
+  def current_version(adapter)
+    Maglev::IndexIdentity.new(
+      configuration: Maglev.configuration,
+      adapter: adapter,
+      chunk_size: Maglev.configuration.chunk_size
+    ).to_s
+  end
+
+  def create_chunk(owner, index:, content:, embedding:, version:)
+    Maglev::Chunk.create!(
+      owner_type: "PgvectorSearchOwner",
+      owner_id: owner.id,
+      owner: owner,
+      owner_model_name: "PgvectorSearchOwner",
+      source: "snapshot",
+      chunk_index: index,
+      content: content,
+      content_checksum: Digest::SHA256.hexdigest(content),
+      embedding_model: "fake",
+      index_version: version,
+      embedding: embedding
+    )
+  end
+
   def pgvector_available?
     connection = ActiveRecord::Base.connection
     connection.enable_extension("vector")

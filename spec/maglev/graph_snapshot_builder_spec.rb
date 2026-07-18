@@ -61,6 +61,14 @@ class GraphSnapshotNode
 end
 
 RSpec.describe Maglev::SnapshotBuilder do
+  around do |example|
+    original = Maglev.configuration
+    Maglev.instance_variable_set(:@configuration, Maglev::Configuration.new)
+    example.run
+  ensure
+    Maglev.instance_variable_set(:@configuration, original)
+  end
+
   it "includes related exposed fields with stable relation-path labels and relation limits" do
     customer = GraphSnapshotCustomer.new
     customer.id = 1
@@ -88,6 +96,25 @@ RSpec.describe Maglev::SnapshotBuilder do
       account GraphSnapshotAccount#20
       account.status: delinquent
     TEXT
+  end
+
+  it "truncates a related subtree through the builder and records its relation path" do
+    Maglev.configuration.snapshot_related_record_max_characters = 35
+    customer = GraphSnapshotCustomer.new
+    customer.id = 1
+    customer.name = "Acme"
+    ticket = GraphSnapshotTicket.new
+    ticket.id = 10
+    ticket.subject = "Urgent renewal risk"
+    customer.tickets = [ticket]
+    customer.account = nil
+
+    snapshot = described_class.new(customer, GraphSnapshotCustomer.maglev_config).build
+
+    expect(snapshot.metadata[:sources]).to include(
+      include(kind: :related_record, path: "tickets[0]", original_characters: be > 35, retained_characters: 35)
+    )
+    expect(snapshot.to_s).not_to include("Urgent renewal risk")
   end
 
   it "terminates cycles through visited-record protection" do

@@ -73,4 +73,59 @@ RSpec.describe Maglev::SchemaCompiler do
     expect { described_class.new(config).compile }
       .to raise_error(Maglev::ConfigurationError, /inverse/)
   end
+
+  it "rejects an order column that does not exist on the related model" do
+    ticket_config = Maglev::KnowledgeConfig.build(CompilerTicket) { expose :subject }
+    allow(CompilerTicket).to receive(:maglev_config).and_return(ticket_config)
+    config = Maglev::KnowledgeConfig.build(CompilerCustomer) do
+      expose :name
+      include_related :tickets, depth: 1, limit: 2, order: :not_a_column
+    end
+
+    expect { described_class.new(config).compile }
+      .to raise_error(Maglev::ConfigurationError, /not_a_column/)
+  end
+
+  it "applies DSL order before limit and exposes complete immutable relation metadata" do
+    CompilerTicket.has_knowledge { expose :subject }
+    CompilerCustomer.has_knowledge do
+      expose :name
+      include_related :tickets, depth: 1, limit: 2, order: {subject: :desc}
+    end
+    customer = CompilerCustomer.create!(name: "Acme")
+    %w[Alpha Gamma Beta].each { |subject| CompilerTicket.create!(customer: customer, subject: subject) }
+
+    snapshot = customer.maglev_snapshot
+    schema = CompilerCustomer.maglev_schema
+
+    expect(snapshot.scan(/tickets\[\d+\]\.subject: (\w+)/).flatten).to eq(%w[Gamma Beta])
+    expect(schema[:relations]).to eq([
+      {
+        name: "tickets", depth: 1, limit: 2, inverse: "customer",
+        order: {subject: :desc, id: :asc}, macro: :has_many,
+        related_model: "CompilerTicket"
+      }
+    ])
+    expect(schema).to be_frozen
+    expect(schema[:relations]).to be_frozen
+    expect(schema[:relations].first).to be_frozen
+    expect(CompilerCustomer.instance_variable_get(:@maglev_schema)).to be_frozen
+    expect(CompilerCustomer.instance_variable_get(:@maglev_schema).relations.first).to be_frozen
+  end
+
+  it "orders an already-loaded association in memory without discarding unsaved members" do
+    CompilerTicket.has_knowledge { expose :subject }
+    CompilerCustomer.has_knowledge do
+      expose :name
+      include_related :tickets, depth: 1, limit: 3, order: {subject: :desc}
+    end
+    customer = CompilerCustomer.create!(name: "Acme")
+    CompilerTicket.create!(customer: customer, subject: "Alpha")
+    customer.tickets.load
+    customer.tickets.build(subject: "Zulu")
+
+    snapshot = customer.maglev_snapshot
+
+    expect(snapshot.scan(/tickets\[\d+\]\.subject: (\w+)/).flatten).to eq(%w[Zulu Alpha])
+  end
 end

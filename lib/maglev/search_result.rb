@@ -16,7 +16,7 @@ module Maglev
     def similarity
       return nil if distance.nil?
 
-      1.0 - distance.to_f
+      (1.0 - distance.to_f).clamp(0.0, 1.0)
     end
   end
 end

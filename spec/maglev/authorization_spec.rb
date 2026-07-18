@@ -4,6 +4,7 @@ require "spec_helper"
 require "maglev/answerer"
 require "maglev/retriever"
 require "maglev/search_result"
+require "maglev/retrieval_outcome"
 
 class AuthzCustomer
   def self.name = "AuthzCustomer"
@@ -19,9 +20,16 @@ class AuthzRetriever
     @calls = []
   end
 
-  def search(query, limit:, owner: nil, user: nil)
+  def retrieval_outcome(query, limit:, owner: nil, user: nil, minimum_similarity: nil, chunks_per_owner: 1)
     @calls << {query: query, limit: limit, owner: owner, user: user}
-    @results
+    Maglev::RetrievalOutcome.new(
+      results: @results,
+      minimum_similarity: minimum_similarity,
+      examined_count: @results.size,
+      accepted_count: @results.size,
+      rejected_count: 0,
+      best_similarity: @results.filter_map(&:similarity).max
+    )
   end
 end
 
