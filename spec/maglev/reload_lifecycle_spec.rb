@@ -117,15 +117,19 @@ RSpec.describe "Rails reload lifecycle" do
       belongs_to :owner, class_name: "ReloadableKnowledgeOwner", foreign_key: :customer_id, inverse_of: :items
     end
     Object.const_set(:ReloadableKnowledgeItem, item)
-    item.has_knowledge { expose :body }
+    item.maglev_resource(:reload_lifecycle_items) do
+      knowledge { expose :body }
+    end
     owner = Class.new(ActiveRecord::Base) do
       self.table_name = "customers"
       has_many :items, class_name: "ReloadableKnowledgeItem", foreign_key: :customer_id, inverse_of: :owner
     end
     Object.const_set(:ReloadableKnowledgeOwner, owner)
-    owner.has_knowledge do
-      expose :name
-      include_related :items, depth: 1, limit: 10, inverse: :owner
+    owner.maglev_resource(:reload_lifecycle_owners) do
+      knowledge do
+        expose :name
+        include_related :items, depth: 1, limit: 10, inverse: :owner
+      end
     end
   end
 

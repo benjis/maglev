@@ -9,6 +9,9 @@ require_relative "errors"
 require_relative "index_identity"
 require_relative "provider_call"
 require_relative "vector_stores/document"
+require_relative "source_extractor"
+require_relative "index_diagnostics"
+require_relative "vector_stores/document_id"
 
 module Maglev
   class Indexer
@@ -37,6 +40,7 @@ module Maglev
       validate_owner_id!
       validate_storage_dimensions!
       prepare_index_identity
+      IndexDiagnostics.record_started(owner_type: @record.class.name, owner_id: @record.id, index_version: @index_version)
       ActiveSupport::Notifications.instrument("maglev.index.start", owner_type: @record.class.name, owner_id: @record.id)
       @embedding_count = 0
 
@@ -46,7 +50,8 @@ module Maglev
           @record.maglev_snapshot_result
         end
         snapshot = snapshot_result ? snapshot_result.to_s : @record.maglev_snapshot
-        all_chunks = Chunker.new(max_characters: @chunk_size, max_chunks: nil).call(snapshot)
+        source_chunks = chunks_for(snapshot, snapshot_result)
+        all_chunks = source_chunks
         chunks = all_chunks.first(Maglev.configuration.snapshot_max_chunks)
         budget_metadata = snapshot_result&.metadata || {truncated: false, sources: []}
         if all_chunks.length > chunks.length && budget_metadata.fetch(:sources, []).none? { |source| source[:kind] == :chunks }
@@ -71,18 +76,40 @@ module Maglev
       end
 
       ActiveSupport::Notifications.instrument("maglev.index.success", owner_type: @record.class.name, owner_id: @record.id, chunk_count: chunk_count, budget: index_metadata)
+      IndexDiagnostics.record_success(owner_type: @record.class.name, owner_id: @record.id,
+        index_version: @index_version, chunk_count: chunk_count)
     rescue => error
       ActiveSupport::Notifications.instrument("maglev.index.failure", owner_type: @record.class.name, owner_id: @record.id, error_class: error.class.name, budget: index_metadata)
+      IndexDiagnostics.record_failure(owner_type: @record.class.name, owner_id: @record.id,
+        index_version: @index_version, error: error)
       raise
     end
 
     def unindex
-      return @vector_store.delete_by_owner(owner_type: @record.class.name, owner_id: @record.id) if @vector_store
+      if @vector_store
+        @vector_store.delete_by_owner(owner_type: @record.class.name, owner_id: @record.id)
+      else
+        identity_scope.delete_all
+      end
 
-      identity_scope.delete_all
+      IndexDiagnostics.record_unindexed(owner_type: @record.class.name, owner_id: @record.id)
     end
 
     private
+
+    def chunks_for(snapshot, snapshot_result)
+      unless snapshot_result
+        return Chunker.new(max_characters: @chunk_size, max_chunks: nil).call(snapshot).each_with_index.map do |content, index|
+          {content: content, source_identity: SOURCE, source_type: :snapshot, chunk_index: index}
+        end
+      end
+
+      SourceExtractor.new.call(snapshot).flat_map do |source|
+        Chunker.new(max_characters: @chunk_size, max_chunks: nil).call(source.content).each_with_index.map do |content, index|
+          {content: content, source_identity: source.identity, source_type: source.type, chunk_index: index}
+        end
+      end
+    end
 
     def persist_if_current(snapshot, prepared)
       with_owner_lock do
@@ -93,11 +120,11 @@ module Maglev
     end
 
     def prepare_chunks(chunks)
-      chunks.each_with_index.map do |content, chunk_index|
-        checksum = Digest::SHA256.hexdigest(content)
-        existing = identity_scope.find_by(chunk_index: chunk_index, content_checksum: checksum, index_version: @index_version)
-        embedding = embed(content) unless existing
-        {content: content, chunk_index: chunk_index, checksum: checksum, embedding: embedding}
+      chunks.map do |chunk|
+        checksum = Digest::SHA256.hexdigest(chunk[:content])
+        existing = identity_scope_for(chunk).find_by(chunk_index: chunk[:chunk_index], content_checksum: checksum, index_version: @index_version)
+        embedding = embed(chunk[:content]) unless existing
+        chunk.merge(checksum: checksum, embedding: embedding)
       end
     end
 
@@ -106,40 +133,47 @@ module Maglev
 
       @chunk_model.transaction do
         chunks.each { |chunk| persist_chunk(chunk) }
-        delete_obsolete_chunks(chunks.length)
+        delete_obsolete_chunks(chunks)
       end
       true
     end
 
     def matching_chunk?(chunk)
-      identity_scope.find_by(chunk_index: chunk[:chunk_index], content_checksum: chunk[:checksum], index_version: @index_version)
+      identity_scope_for(chunk).find_by(chunk_index: chunk[:chunk_index], content_checksum: chunk[:checksum], index_version: @index_version)
     end
 
     def persist_chunk(chunk)
       return if matching_chunk?(chunk)
 
-      identity_scope.where(chunk_index: chunk[:chunk_index]).delete_all
+      identity_scope_for(chunk).where(chunk_index: chunk[:chunk_index]).delete_all
 
-      @chunk_model.create!(
+      attributes = {
         **identity,
         owner: @record,
-        source: SOURCE,
+        source: chunk[:source_identity],
         chunk_index: chunk[:chunk_index],
         content: chunk[:content],
         content_checksum: chunk[:checksum],
         embedding_model: @identity_configuration.embedding_model,
         index_version: @index_version,
         embedding: chunk[:embedding]
-      )
+      }
+      if source_metadata_columns?
+        attributes[:source_identity] = chunk[:source_identity]
+        attributes[:source_type] = chunk[:source_type]
+        attributes[:tenant_id] = Maglev.configuration.tenant_id(record: @record)
+      end
+      @chunk_model.create!(attributes)
     end
 
     def prepare_documents(chunks)
-      prepared = chunks.each_with_index.map do |content, chunk_index|
+      prepared = chunks.map do |chunk|
         {
-          id: stable_document_id(chunk_index),
-          content: content,
-          chunk_index: chunk_index,
-          checksum: Digest::SHA256.hexdigest(content)
+          id: stable_document_id(chunk[:source_identity], chunk[:chunk_index]),
+          content: chunk[:content],
+          source_identity: chunk[:source_identity], source_type: chunk[:source_type],
+          chunk_index: chunk[:chunk_index],
+          checksum: Digest::SHA256.hexdigest(chunk[:content])
         }
       end
       existing_by_id = @vector_store.fetch(ids: prepared.map { |chunk| chunk[:id] }).to_h { |document| [document.id, document] }
@@ -156,12 +190,25 @@ module Maglev
       true
     end
 
-    def delete_obsolete_chunks(chunk_count)
-      identity_scope.where.not(chunk_index: (0...chunk_count).to_a).delete_all
+    def delete_obsolete_chunks(chunks)
+      retained = chunks.group_by { |chunk| chunk[:source_identity] }
+      if retained.keys == [SOURCE]
+        identity_scope.where(source: SOURCE).where.not(chunk_index: retained.fetch(SOURCE).map { |chunk| chunk[:chunk_index] }).delete_all
+        return
+      end
+
+      identity_scope.where.not(source: retained.keys).delete_all
+      retained.each do |source, source_chunks|
+        identity_scope.where(source: source).where.not(chunk_index: source_chunks.map { |chunk| chunk[:chunk_index] }).delete_all
+      end
     end
 
     def identity_scope
-      @chunk_model.where(identity.merge(source: SOURCE))
+      @chunk_model.where(identity)
+    end
+
+    def identity_scope_for(chunk)
+      @chunk_model.where(identity.merge(source: chunk[:source_identity]))
     end
 
     def identity
@@ -195,6 +242,10 @@ module Maglev
       raise ConfigurationError,
         "Configured embedding dimensions #{@embedding_dimensions} do not match " \
         "#{@chunk_model.table_name}.embedding vector(#{database_dimensions})"
+    end
+
+    def source_metadata_columns?
+      !@chunk_model.respond_to?(:columns_hash) || @chunk_model.columns_hash.key?("source_identity")
     end
 
     def embed(content)
@@ -246,8 +297,9 @@ module Maglev
       @record.with_lock(&block)
     end
 
-    def stable_document_id(chunk_index)
-      "#{@record.class.name}:#{@record.id}:#{SOURCE}:#{chunk_index}"
+    def stable_document_id(source_identity, chunk_index)
+      VectorStores::DocumentId.build(owner_type: @record.class.name, owner_id: @record.id,
+        source_identity: source_identity, chunk_index: chunk_index)
     end
 
     def document_for(chunk, embedding:)
@@ -257,7 +309,10 @@ module Maglev
         owner_id: @record.id,
         owner_model_name: @record.class.name,
         owner: @record,
-        source: SOURCE,
+        source: chunk[:source_identity],
+        source_identity: chunk[:source_identity],
+        source_type: chunk[:source_type],
+        tenant_id: Maglev.configuration.tenant_id(record: @record),
         chunk_index: chunk[:chunk_index],
         content: chunk[:content],
         content_checksum: chunk[:checksum],

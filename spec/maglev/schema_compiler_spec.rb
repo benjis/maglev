@@ -87,10 +87,14 @@ RSpec.describe Maglev::SchemaCompiler do
   end
 
   it "applies DSL order before limit and exposes complete immutable relation metadata" do
-    CompilerTicket.has_knowledge { expose :subject }
-    CompilerCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 2, order: {subject: :desc}
+    CompilerTicket.maglev_resource(:compiler_tickets) do
+      knowledge { expose :subject }
+    end
+    CompilerCustomer.maglev_resource(:compiler_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 2, order: {subject: :desc}
+      end
     end
     customer = CompilerCustomer.create!(name: "Acme")
     %w[Alpha Gamma Beta].each { |subject| CompilerTicket.create!(customer: customer, subject: subject) }
@@ -114,10 +118,14 @@ RSpec.describe Maglev::SchemaCompiler do
   end
 
   it "orders an already-loaded association in memory without discarding unsaved members" do
-    CompilerTicket.has_knowledge { expose :subject }
-    CompilerCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 3, order: {subject: :desc}
+    CompilerTicket.maglev_resource(:compiler_tickets) do
+      knowledge { expose :subject }
+    end
+    CompilerCustomer.maglev_resource(:compiler_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 3, order: {subject: :desc}
+      end
     end
     customer = CompilerCustomer.create!(name: "Acme")
     CompilerTicket.create!(customer: customer, subject: "Alpha")

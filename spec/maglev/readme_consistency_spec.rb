@@ -2,36 +2,54 @@
 
 require "spec_helper"
 
+readmes = %w[README.md README.zh-CN.md README.ja.md].freeze
+public_api_terms = %w[
+  maglev_resource queryable knowledge Maglev.plan Maglev.execute
+  maglev_request SupportTicket.search SupportTicket.retrieve SupportTicket.ask
+  structured_first rag_first policy_limits evidence_requirements
+].freeze
+operations_terms = %w[
+  index_version fetch(ids:) replace_owner maglev:upgrade_index_version
+  maglev:upgrade_source_identity maglev:reindex_all HNSW embedding_adapter_id
+  maglev-index delete_by_owner upsert
+].freeze
+beginner_dsl_terms = %w[
+  description synonyms sensitive enum_values allow_unscoped_model_queries
+  expose hide tags include_related expose_attached expose_rich_text
+].freeze
+
 RSpec.describe "README consistency" do
-  %w[README.md README.zh-CN.md].each do |readme_name|
-    it "keeps the #{readme_name} Quick Start embedding dimensions consistent" do
-      readme = File.read(File.expand_path("../../#{readme_name}", __dir__))
-      quick_start = readme.match(/### 1\..*?### 3\./m).to_s
-
-      generator_dimensions = quick_start.match(/maglev:install --embedding-dimensions=(\d+)/)&.captures&.first
-      provider_dimensions = quick_start.match(/provider\.dimensions = (\d+)/)&.captures&.first
-
-      expect(generator_dimensions).not_to be_nil
-      expect(provider_dimensions).not_to be_nil
-      expect(generator_dimensions).to eq(provider_dimensions)
-    end
-
-    it "documents the #{readme_name} index identity and atomic store upgrade contract" do
+  readmes.each do |readme_name|
+    it "keeps #{readme_name} synchronized with the v0.2 public architecture" do
       readme = File.read(File.expand_path("../../#{readme_name}", __dir__))
 
-      %w[index_version fetch(ids:) replace_owner maglev:upgrade_index_version maglev:reindex_all HNSW].each do |term|
+      (public_api_terms + operations_terms).each do |term|
         expect(readme).to include(term)
       end
-      expect(readme).to match(/vector.*column|向量列/i)
-      expect(readme).to match(/embedding_adapter_id/)
-      expect(readme).to match(/delete_by_owner.*upsert|delete.*upsert/im)
-      expect(readme).to include("maglev-index")
-      expect(readme).to match(/format version.*1|格式版本.*1/i)
-      expect(readme).to match(/nullable.*index_version|可空.*index_version/i)
-      expect(readme).to match(/legacy.*unavailable.*full reindex|旧记录.*完整重建.*不会参与检索|完整重建.*旧记录.*不会参与检索/i)
-      expect(readme).to match(/dimension.*before reindex|维度.*再执行全量重建/i)
-      expect(readme).to match(/fail.*preserve.*previous.*generation|失败.*保留上一代/im)
-      expect(readme).to match(/delete_by_owner.*upsert.*not atomic|delete_by_owner.*upsert.*并不原子/im)
+      expect(readme).to include(":structured", ":rag", ":hybrid", ":auto")
+      expect(readme).to include("authorization :required")
+      expect(readme).to include("retrieval_max_candidates = 1000")
+      expect(readme).not_to include("plan.to_sql")
+      expect(readme).not_to include("has_knowledge")
+    end
+
+    it "keeps #{readme_name} installation and provider dimensions consistent" do
+      readme = File.read(File.expand_path("../../#{readme_name}", __dir__))
+      generator_dimensions = readme.match(/maglev:install --embedding-dimensions=(\d+)/)&.captures&.first
+      provider_dimensions = readme.match(/provider\.dimensions = (\d+)/)&.captures&.first
+
+      expect(generator_dimensions).to eq("1536")
+      expect(provider_dimensions).to eq(generator_dimensions)
+    end
+
+    it "keeps #{readme_name} approachable with annotated examples and a DSL reference" do
+      readme = File.read(File.expand_path("../../#{readme_name}", __dir__))
+      invoice_example = readme.match(/class Invoice < ApplicationRecord.*?^end\n```/m).to_s
+
+      expect(readme).to include("DSL", "SupportTicket.retrieve", "SupportTicket.ask")
+      beginner_dsl_terms.each { |term| expect(readme).to include(term) }
+      expect(invoice_example.scan(/^\s+# /).length).to be >= 10
+      expect(readme).to include("mode: :hybrid", "hybrid_plan: :structured_first")
     end
   end
 end

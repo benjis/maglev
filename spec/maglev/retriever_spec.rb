@@ -130,6 +130,22 @@ class DuplicateOwnerVectorStore
   end
 end
 
+class BoundedAuthorizedScope
+  def initialize(ids) = @ids = ids
+  def limit(value) = self.class.new(@ids.first(value))
+  def pluck(column) = (column == :id) ? @ids : raise("unexpected column")
+end
+
+class PushdownAuthorization
+  def initialize(ids) = @ids = ids
+  def scope(model:, user:) = BoundedAuthorizedScope.new(@ids)
+  def authorize(record:, user:) = @ids.include?(record.id)
+end
+
+class MaliciousV2Store < DuplicateOwnerVectorStore
+  def contract_version = 2
+end
+
 class IdentityCaptureVectorStore
   attr_reader :documents, :filters
 
@@ -218,7 +234,21 @@ RSpec.describe Maglev::Retriever do
       .search("support", limit: 2)
 
     expect(results.map(&:owner)).to eq(["customer-1", "customer-2"])
-    expect(chunk_model.candidate_limits).to eq([4])
+    expect(chunk_model.candidate_limits).to eq([8])
+  end
+
+  it "rejects invalid limits and caps adversarial candidate requests" do
+    chunk_model = FakeSearchChunk.with_rows([])
+    retriever = described_class.new(FakeSearchOwner, chunk_model: chunk_model,
+      embedding_adapter: FakeQueryEmbeddingAdapter.new)
+    expect { retriever.search("q", limit: 0) }.to raise_error(ArgumentError, /limit must be a positive Integer/)
+
+    original = Maglev.configuration.retrieval_max_candidates
+    Maglev.configuration.retrieval_max_candidates = 20
+    retriever.search("q", limit: 1_000_000)
+    expect(chunk_model.candidate_limits.last).to eq(20)
+  ensure
+    Maglev.configuration.retrieval_max_candidates = original
   end
 
   it "boundedly over-fetches custom-store candidates before owner de-duplication" do
@@ -236,8 +266,8 @@ RSpec.describe Maglev::Retriever do
       embedding_adapter: FakeQueryEmbeddingAdapter.new
     ).search("support", limit: 2)
 
-    expect(store.limits).to eq([4])
-    expect(store.filters.first).to include(index_version: current_index_version(FakeQueryEmbeddingAdapter.new))
+    expect(store.limits).to eq([8])
+    expect(store.filters.first.to_h).to include(index_version: current_index_version(FakeQueryEmbeddingAdapter.new))
     expect(results.map(&:owner)).to eq(["customer-1", "customer-2"])
   end
 
@@ -362,6 +392,23 @@ RSpec.describe Maglev::Retriever do
     expect(outcome.best_similarity).to eq(0.9)
   end
 
+  it "returns inspectable evidence with a trace id and context budget decisions" do
+    chunk_model = FakeSearchChunk.with_rows([
+      FakeSearchRow.new("customer-1", "selected", "attribute:name", 0.1),
+      FakeSearchRow.new("customer-2", "rejected", "attribute:name", 0.8)
+    ])
+
+    result = described_class.new(FakeSearchOwner, chunk_model: chunk_model, embedding_adapter: FakeQueryEmbeddingAdapter.new)
+      .retrieve("support", limit: 2, minimum_similarity: 0.5)
+
+    expect(result.query).to eq("support")
+    expect(result.considered.map(&:content)).to eq(%w[selected rejected])
+    expect(result.selected.map(&:content)).to eq(["selected"])
+    expect(result.rejected.map { |item| item.fetch(:reason) }).to eq([:relevance_threshold])
+    expect(result.trace_id).to match(/\A[0-9a-f-]{36}\z/)
+    expect(result.timings).to include(:embedding_ms, :retrieval_ms, :context_assembly_ms, :total_ms)
+  end
+
   it "retains bounded multiple chunks for model-level answering" do
     adapter = FakeQueryEmbeddingAdapter.new
     chunk_model = FakeSearchChunk.with_rows([
@@ -374,7 +421,7 @@ RSpec.describe Maglev::Retriever do
       .retrieval_outcome("support", limit: 2, chunks_per_owner: 2)
 
     expect(outcome.results.map(&:content)).to eq(%w[first second third])
-    expect(chunk_model.candidate_limits).to eq([8])
+    expect(chunk_model.candidate_limits).to eq([16])
   end
 
   it "validates the threshold before embedding" do
@@ -492,6 +539,58 @@ RSpec.describe Maglev::Retriever do
     expect(outcome.examined_count).to eq(1)
   end
 
+  it "pushes bounded authorization owner ids and the resolved tenant into custom-store filters" do
+    allowed = Struct.new(:id).new(1)
+    store = DuplicateOwnerVectorStore.new([FakeSearchRow.new(allowed, "public", "snapshot", 0.1)])
+    Maglev.configuration.tenant_id_resolver = ->(record: nil, user: nil) { record&.tenant_id || user&.fetch(:tenant_id) }
+    authorization = Maglev::Authorization.new(adapter: PushdownAuthorization.new([1]))
+
+    described_class.new(FakeSearchOwner, vector_store: store, embedding_adapter: FakeQueryEmbeddingAdapter.new,
+      authorization: authorization).retrieve("support", limit: 2, user: {tenant_id: "tenant-7"})
+
+    expect(store.filters.first.to_h).to include(owner_ids: [1], tenant_id: "tenant-7")
+  end
+
+  it "explains no documents and authorization filtering separately" do
+    empty = described_class.new(FakeSearchOwner, chunk_model: FakeSearchChunk.with_rows([]), embedding_adapter: FakeQueryEmbeddingAdapter.new)
+      .retrieve("support", limit: 2)
+    expect(empty.reasons).to eq([:no_documents])
+
+    denied = Struct.new(:id).new(2)
+    store = DuplicateOwnerVectorStore.new([FakeSearchRow.new(denied, "secret", "snapshot", 0.1)])
+    authorization = Maglev::Authorization.new(adapter: PushdownAuthorization.new([1]))
+    filtered = described_class.new(FakeSearchOwner, vector_store: store, embedding_adapter: FakeQueryEmbeddingAdapter.new,
+      authorization: authorization).retrieve("support", limit: 2, user: :user)
+    expect(filtered.reasons).to include(:authorization_filtered)
+  end
+
+  it "does not leak an empty authorization scope across reused retrievals" do
+    allowed = Struct.new(:id).new(1)
+    store = DuplicateOwnerVectorStore.new([FakeSearchRow.new(allowed, "public", "snapshot", 0.1)])
+    adapter = PushdownAuthorization.new([])
+    retriever = described_class.new(FakeSearchOwner, vector_store: store, embedding_adapter: FakeQueryEmbeddingAdapter.new,
+      authorization: Maglev::Authorization.new(adapter: adapter))
+
+    expect(retriever.retrieve("first", limit: 1, user: :denied).selected).to be_empty
+    adapter.instance_variable_set(:@ids, [1])
+    expect(retriever.retrieve("second", limit: 1, user: :allowed).selected.map(&:content)).to eq(["public"])
+  end
+
+  it "rejects forged owners and tenant metadata after custom-store hydration" do
+    forged = Struct.new(:id).new(99)
+    document = Maglev::VectorStores::Document.new(owner_type: "FakeSearchOwner", owner_id: 1,
+      owner_model_name: "FakeSearchOwner", owner: forged, source: "snapshot", chunk_index: 0,
+      content: "secret", content_checksum: "x", embedding_model: "fake", index_version: "a" * 64,
+      embedding: [0.1, 0.2, 0.3], tenant_id: "other", distance: 0.1)
+    store = MaliciousV2Store.new([document])
+    Maglev.configuration.tenant_id_resolver = ->(record: nil, user: nil) { "expected" }
+
+    result = described_class.new(FakeSearchOwner, vector_store: store, embedding_adapter: FakeQueryEmbeddingAdapter.new)
+      .retrieve("support", limit: 1, user: :user)
+
+    expect(result.selected).to be_empty
+  end
+
   it "fills selected owners from accepted custom-store candidates after threshold rejection" do
     store = DuplicateOwnerVectorStore.new([
       FakeSearchRow.new("rejected-owner", "too far", "snapshot", 0.8),
@@ -504,7 +603,7 @@ RSpec.describe Maglev::Retriever do
       embedding_adapter: FakeQueryEmbeddingAdapter.new
     ).retrieval_outcome("support", limit: 1, minimum_similarity: 0.5)
 
-    expect(store.limits).to eq([2])
+    expect(store.limits).to eq([4])
     expect(outcome.results.map(&:owner)).to eq(["accepted-owner"])
     expect(outcome).to have_attributes(examined_count: 2, accepted_count: 1, rejected_count: 1)
   end

@@ -15,8 +15,10 @@ RSpec.describe "ActiveRecord indexing callbacks" do
     callback_count_before = SearchableCustomer._commit_callbacks.count
 
     2.times do
-      SearchableCustomer.has_knowledge do
-        expose :name, :description
+      SearchableCustomer.maglev_resource(:searchable_customers) do
+        knowledge do
+          expose :name, :description
+        end
       end
     end
 
@@ -26,8 +28,10 @@ RSpec.describe "ActiveRecord indexing callbacks" do
   end
 
   it "exposes search as a configured class API" do
-    SearchableCustomer.has_knowledge do
-      expose :name
+    SearchableCustomer.maglev_resource(:searchable_customers) do
+      knowledge do
+        expose :name
+      end
     end
 
     allow(Maglev::Retriever).to receive(:new).and_return(instance_double(Maglev::Retriever, search: ["result"]))
@@ -37,8 +41,10 @@ RSpec.describe "ActiveRecord indexing callbacks" do
   end
 
   it "enqueues reindexing through the configured callback method" do
-    SearchableCustomer.has_knowledge do
-      expose :name
+    SearchableCustomer.maglev_resource(:searchable_customers) do
+      knowledge do
+        expose :name
+      end
     end
     customer = SearchableCustomer.allocate
     allow(customer).to receive(:id).and_return(42)
@@ -50,8 +56,10 @@ RSpec.describe "ActiveRecord indexing callbacks" do
   end
 
   it "removes chunks through the configured destroy callback method" do
-    SearchableCustomer.has_knowledge do
-      expose :name
+    SearchableCustomer.maglev_resource(:searchable_customers) do
+      knowledge do
+        expose :name
+      end
     end
     customer = SearchableCustomer.allocate
     indexer = instance_double(Maglev::Indexer, unindex: true)
@@ -62,9 +70,11 @@ RSpec.describe "ActiveRecord indexing callbacks" do
     expect(indexer).to have_received(:unindex)
   end
 
-  it "exposes answer-generation APIs in phase 3" do
-    SearchableCustomer.has_knowledge do
-      expose :name
+  it "exposes answer-generation APIs on configured models and records" do
+    SearchableCustomer.maglev_resource(:searchable_customers) do
+      knowledge do
+        expose :name
+      end
     end
 
     expect(SearchableCustomer).to respond_to(:ask)

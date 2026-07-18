@@ -23,7 +23,9 @@ module Maglev
       :vector_store, :embedding_adapter_id, :embedding_adapter_version,
       :application_index_version, :minimum_similarity,
       :snapshot_attribute_max_characters, :snapshot_related_record_max_characters,
-      :snapshot_max_characters, :snapshot_max_chunks
+      :snapshot_max_characters, :snapshot_max_chunks,
+      :structured_query_role, :structured_query_executor_wrapper, :planner_adapter, :routing_adapter, :audit_sink,
+      :tenant_id_resolver
 
     def initialize
       @embedding_provider = ProviderConfiguration.new(
@@ -52,6 +54,12 @@ module Maglev
       @snapshot_related_record_max_characters = 50_000
       @snapshot_max_characters = 100_000
       @snapshot_max_chunks = 100
+      @structured_query_timeout = 5
+      @structured_query_role = nil
+      @structured_query_executor_wrapper = nil
+      @structured_evidence_max_rows = 100
+      @structured_evidence_max_bytes = 32_768
+      @retrieval_max_candidates = 1_000
     end
 
     def embedding_provider
@@ -80,6 +88,39 @@ module Maglev
 
     def generation_model=(model)
       @generation_provider.model = model
+    end
+
+    def tenant_id(record: nil, user: nil)
+      return unless @tenant_id_resolver
+
+      value = @tenant_id_resolver.call(record: record, user: user)
+      return if value.nil?
+      raise ArgumentError, "tenant id must be a non-empty String" unless value.is_a?(String) && !value.empty?
+
+      value
+    end
+
+    attr_reader :structured_query_timeout, :structured_evidence_max_rows, :structured_evidence_max_bytes,
+      :retrieval_max_candidates
+
+    def structured_query_timeout=(value)
+      raise ArgumentError, "structured_query_timeout must be positive" unless value.is_a?(Numeric) && value.positive?
+
+      @structured_query_timeout = value
+    end
+
+    %i[structured_evidence_max_rows structured_evidence_max_bytes].each do |name|
+      define_method(:"#{name}=") do |value|
+        raise ArgumentError, "#{name} must be a positive Integer" unless value.is_a?(Integer) && value.positive?
+
+        instance_variable_set(:"@#{name}", value)
+      end
+    end
+
+    def retrieval_max_candidates=(value)
+      raise ArgumentError, "retrieval_max_candidates must be a positive Integer" unless value.is_a?(Integer) && value.positive?
+
+      @retrieval_max_candidates = value
     end
 
     %i[

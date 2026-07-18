@@ -2,6 +2,7 @@
 
 require_relative "base"
 require_relative "document"
+require_relative "metadata_filter"
 
 module Maglev
   module VectorStores
@@ -50,6 +51,7 @@ module Maglev
       end
 
       def search(vector:, filters:, limit:)
+        filters = MetadataFilter.coerce(filters)
         documents = @mutex.synchronize { @documents.values.map(&:document) }
         documents
           .select { |document| matches_filters?(document, filters) }
@@ -93,7 +95,13 @@ module Maglev
       end
 
       def matches_filters?(document, filters)
-        filters.all? { |key, value| document.metadata.fetch(key) == value }
+        filters.all? do |key, value|
+          case key
+          when :owner_ids then value.include?(document.owner_id)
+          when :source_types then value.map(&:to_sym).include?(document.source_type)
+          else document.metadata.fetch(key) == value
+          end
+        end
       end
 
       def cosine_distance(left, right)
@@ -112,6 +120,9 @@ module Maglev
           owner_id: document.owner_id,
           owner_model_name: document.owner_model_name,
           source: document.source,
+          source_identity: document.source_identity,
+          source_type: document.source_type,
+          tenant_id: document.tenant_id,
           chunk_index: document.chunk_index,
           content: document.content,
           content_checksum: document.content_checksum,

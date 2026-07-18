@@ -1,0 +1,71 @@
+{
+  "query_ir": {
+    "version": 1,
+    "root": "orders",
+    "operation": "records",
+    "scopes": [
+      {
+        "name": "placed_during",
+        "parameters": {
+          "from": "2026-07-01",
+          "to": "2026-07-31"
+        }
+      }
+    ],
+    "filters": [
+      {
+        "field": "status",
+        "operator": "eq",
+        "value": "paid"
+      }
+    ],
+    "joins": ["customer"],
+    "sort": [
+      {
+        "field": "created_at",
+        "direction": "desc"
+      }
+    ],
+    "distinct": false,
+    "limit": 25
+  },
+  "plan_statuses": [
+    "ready",
+    "clarification_required",
+    "unsupported",
+    "invalid"
+  ],
+  "result_statuses": [
+    "succeeded",
+    "clarification_required",
+    "unsupported",
+    "failed"
+  ],
+  "result_kinds": [
+    "relation",
+    "scalar",
+    "aggregate",
+    "rag_answer",
+    "hybrid_answer",
+    "none"
+  ],
+  "validation_error": {
+    "code": "unregistered_field",
+    "message": "The requested field is not registered for this resource",
+    "path": ["filters", 0, "field"],
+    "details": {
+      "resource": "orders",
+      "field": "secret_token"
+    }
+  },
+  "base_relation_policy": {
+    "application_calls": "required",
+    "model_all_default": "deny",
+    "model_all_opt_in": "allow_unscoped_model_queries",
+    "compiler_prohibitions": [
+      "unscoped",
+      "root_model_switch",
+      "constraint_removal"
+    ]
+  }
+}

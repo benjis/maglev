@@ -9,6 +9,7 @@ module Maglev
         require "maglev/active_record_extension"
 
         include Maglev::ActiveRecordExtension
+        ActiveRecord::Relation.include(Maglev::RelationExtension)
       end
     end
 
@@ -16,6 +17,7 @@ module Maglev
       config.to_prepare do
         Maglev::DependencyGraph.reset!
         Maglev::KnowledgeRegistry.rebuild!
+        Maglev::Registry.rebuild!
       end
     end
 

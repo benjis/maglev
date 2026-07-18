@@ -5,6 +5,8 @@ require "digest"
 require_relative "../chunk"
 require_relative "base"
 require_relative "document"
+require_relative "metadata_filter"
+require_relative "document_id"
 
 module Maglev
   module VectorStores
@@ -21,7 +23,7 @@ module Maglev
             next if existing
 
             scope.where(chunk_index: document.chunk_index).delete_all
-            @chunk_model.create!(
+            attributes = {
               owner_type: document.owner_type,
               owner_id: document.owner_id,
               owner_model_name: document.owner_model_name,
@@ -33,7 +35,13 @@ module Maglev
               embedding_model: document.embedding_model,
               index_version: document.index_version,
               embedding: document.embedding
-            )
+            }
+            if source_metadata_columns?
+              attributes[:source_identity] = document.source_identity
+              attributes[:source_type] = document.source_type
+              attributes[:tenant_id] = document.tenant_id
+            end
+            @chunk_model.create!(attributes)
           end
         end
       end
@@ -60,8 +68,9 @@ module Maglev
       end
 
       def search(vector:, filters:, limit:)
-        scope = filters.reduce(@chunk_model.all) do |current_scope, (key, value)|
-          current_scope.where(key => value)
+        scope = MetadataFilter.coerce(filters).reduce(@chunk_model.all) do |current_scope, (key, value)|
+          column = {owner_ids: :owner_id, source_types: :source_type}.fetch(key, key)
+          current_scope.where(column => value)
         end
         scope.nearest_neighbors(:embedding, vector, distance: "cosine")
           .first(limit)
@@ -93,16 +102,12 @@ module Maglev
       private
 
       def parse_id(id)
-        parts = id.split(":")
-        chunk_index = parts.pop
-        source = parts.pop
-        owner_id = parts.pop
-        [parts.join(":"), owner_id, source, chunk_index]
+        DocumentId.parse(id)
       end
 
       def stage(documents)
         documents.map do |document|
-          {
+          attributes = {
             owner_type: document.owner_type,
             owner_id: document.owner_id,
             owner_model_name: document.owner_model_name,
@@ -115,7 +120,17 @@ module Maglev
             index_version: document.index_version,
             embedding: document.embedding
           }
+          if source_metadata_columns?
+            attributes[:source_identity] = document.source_identity
+            attributes[:source_type] = document.source_type
+            attributes[:tenant_id] = document.tenant_id
+          end
+          attributes
         end
+      end
+
+      def source_metadata_columns?
+        !@chunk_model.respond_to?(:columns_hash) || @chunk_model.columns_hash.key?("source_identity")
       end
 
       def lock_owner(owner_type, owner_id)
@@ -135,10 +150,16 @@ module Maglev
 
       def document_for(row)
         Document.new(
+          id: DocumentId.build(owner_type: row.owner_type, owner_id: row.owner_id,
+            source_identity: ((row.respond_to?(:source_identity) && row.source_identity) ? row.source_identity : row.source),
+            chunk_index: row.chunk_index),
           owner_type: row.owner_type,
           owner_id: row.owner_id,
           owner_model_name: row.owner_model_name,
           source: row.source,
+          source_identity: row.respond_to?(:source_identity) ? row.source_identity : row.source,
+          source_type: row.respond_to?(:source_type) ? row.source_type : :snapshot,
+          tenant_id: row.respond_to?(:tenant_id) ? row.tenant_id : nil,
           chunk_index: row.chunk_index,
           content: row.content,
           content_checksum: row.content_checksum,

@@ -5,13 +5,11 @@ log/
 **/tmp/
 **/log/
 .DS_Store
-docs/
+CONTEXT.md
 TODO.md
 AGENTS.md
 AGENTS_HANDOFF.md
 IMPLEMENTATION_PLAN.md
-scope.md
 .codegraph/
 .handoff/
 spec/guardrails/
-

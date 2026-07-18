@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ruby: ["3.2", "3.3"]
+        ruby: ["3.3", "4.0"]
         rails: ["7.1", "8.0"]
     services:
       postgres:
@@ -44,3 +44,9 @@ jobs:
       - run: bundle exec standardrb
       - run: bundle exec rubocop
       - run: bundle exec rake build
+      - name: Boot dummy application
+        working-directory: spec/dummy
+        env:
+          RAILS_ENV: test
+        run: bundle exec rails runner 'abort unless Rails.application && Maglev::VERSION'
+      - run: bundle exec rake maglev:release_audit

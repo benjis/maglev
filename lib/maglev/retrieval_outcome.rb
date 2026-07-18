@@ -3,16 +3,21 @@
 module Maglev
   class RetrievalOutcome
     attr_reader :results, :minimum_similarity, :examined_count,
-      :accepted_count, :rejected_count, :best_similarity
+      :accepted_count, :rejected_count, :best_similarity, :considered, :rejected_results,
+      :authorization_rejected_count
 
     def initialize(results:, minimum_similarity:, examined_count:,
-      accepted_count:, rejected_count:, best_similarity:)
+      accepted_count:, rejected_count:, best_similarity:, considered: nil, rejected_results: nil,
+      authorization_rejected_count: 0)
       @results = results.freeze
       @minimum_similarity = minimum_similarity
       @examined_count = examined_count
       @accepted_count = accepted_count
       @rejected_count = rejected_count
       @best_similarity = best_similarity
+      @considered = (considered || results).freeze
+      @rejected_results = (rejected_results || []).freeze
+      @authorization_rejected_count = authorization_rejected_count
       freeze
     end
 

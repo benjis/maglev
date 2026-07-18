@@ -93,18 +93,24 @@ RSpec.describe "ActiveStorage and ActionText knowledge" do
       has_many :accounts, class_name: "ContentAccount", inverse_of: :organization, foreign_key: :content_organization_id
     end)
 
-    ContentCustomer.has_knowledge do
-      expose :name
-      expose_attached :contracts, :summary
-      expose_rich_text :notes
+    ContentCustomer.maglev_resource(:content_customers) do
+      knowledge do
+        expose :name
+        expose_attached :contracts, :summary
+        expose_rich_text :notes
+      end
     end
-    ContentAccount.has_knowledge do
-      expose :name
-      include_related :customers, depth: 1, limit: 10
+    ContentAccount.maglev_resource(:content_accounts) do
+      knowledge do
+        expose :name
+        include_related :customers, depth: 1, limit: 10
+      end
     end
-    ContentOrganization.has_knowledge do
-      expose :name
-      include_related :accounts, depth: 2, limit: 10
+    ContentOrganization.maglev_resource(:content_organizations) do
+      knowledge do
+        expose :name
+        include_related :accounts, depth: 2, limit: 10
+      end
     end
   end
 
@@ -172,12 +178,13 @@ RSpec.describe "ActiveStorage and ActionText knowledge" do
     customer.update!(notes: "<p>Visible note</p><script>alert('hidden')</script>")
     perform_enqueued_jobs
 
-    search_result = ContentCustomer.search("risk", limit: 1).first
-    answer = ContentCustomer.ask("What sources mention risk?", limit: 1)
+    retrieval = ContentCustomer.retrieve("risk", limit: 1, chunks_per_owner: 3)
+    search_result = retrieval.selected.first
+    answer = ContentCustomer.ask("What sources mention risk?", limit: 1, chunks_per_owner: 4)
 
     expect(search_result.content).to include("contracts[blob:")
-    expect(search_result.content).to include("rich_text.notes.text: Visible note")
-    expect(search_result.content).not_to include("alert")
+    expect(retrieval.considered.map(&:content).join("\n")).to include("rich_text.notes.text: Visible note")
+    expect(retrieval.considered.map(&:content).join("\n")).not_to include("alert")
     expect(answer.sources.first[:content]).to include("contracts[blob:")
     expect(answer.text).to eq("Attachment cited: true")
   end

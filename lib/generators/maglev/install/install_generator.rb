@@ -44,6 +44,9 @@ module Maglev
                 t.bigint :owner_id, null: false
                 t.string :owner_model_name, null: false
                 t.string :source, null: false
+                t.string :source_identity, null: false
+                t.string :source_type, null: false
+                t.string :tenant_id
                 t.integer :chunk_index, null: false
                 t.text :content, null: false
                 t.string :content_checksum, null: false
@@ -55,7 +58,23 @@ module Maglev
 
               add_index :maglev_chunks, [:owner_type, :owner_id, :source, :chunk_index], unique: true, name: "index_maglev_chunks_on_owner_source_chunk"
               add_index :maglev_chunks, :owner_model_name
+              add_index :maglev_chunks, [:owner_model_name, :owner_id, :source_type, :index_version], name: "index_maglev_chunks_for_filtered_retrieval"
+              add_index :maglev_chunks, :tenant_id
               add_index :maglev_chunks, :embedding, using: :hnsw, opclass: :vector_cosine_ops
+
+              create_table :maglev_index_states do |t|
+                t.string :owner_type, null: false
+                t.bigint :owner_id, null: false
+                t.string :status, null: false
+                t.string :active_index_version, limit: 64
+                t.integer :chunk_count, null: false, default: 0
+                t.datetime :last_success_at
+                t.string :latest_failure_class
+                t.datetime :latest_failure_at
+                t.boolean :rebuild_required, null: false, default: false
+                t.timestamps
+              end
+              add_index :maglev_index_states, [:owner_type, :owner_id], unique: true
             end
           end
         RUBY

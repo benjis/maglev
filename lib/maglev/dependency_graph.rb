@@ -25,6 +25,12 @@ module Maglev
         end
       end
 
+      def unregister(owner_class)
+        edges.each_value do |registered_edges|
+          registered_edges.reject! { |edge| edge.owner_class == owner_class }
+        end
+      end
+
       def reindex_dependents_for(record)
         enqueue(transitive_dependents_for(record))
         clear_previous_dependent_owners(record)

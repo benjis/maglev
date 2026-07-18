@@ -38,7 +38,7 @@ module Maglev
 
       related_class = reflection.klass
       unless related_class.respond_to?(:maglev_config) && related_class.maglev_config
-        raise ConfigurationError, "Related Maglev model #{related_class.name} must declare has_knowledge"
+        raise ConfigurationError, "Related Maglev model #{related_class.name} must declare maglev_resource knowledge"
       end
 
       inverse = relation.inverse || reflection.inverse_of&.name&.to_s

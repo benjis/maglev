@@ -21,6 +21,9 @@ RSpec.describe "Pgvector vector store adapter" do
       t.bigint :owner_id, null: false
       t.string :owner_model_name, null: false
       t.string :source, null: false
+      t.string :source_identity, null: false
+      t.string :source_type, null: false
+      t.string :tenant_id
       t.integer :chunk_index, null: false
       t.text :content, null: false
       t.string :content_checksum, null: false
@@ -55,6 +58,7 @@ RSpec.describe "Pgvector vector store adapter" do
     filtered = store.search(vector: [1.0, 0.0], filters: {owner_model_name: "PgvectorStoreOwner", owner_id: other_owner.id}, limit: 2)
 
     expect(results.map(&:owner_id)).to eq([owner.id, other_owner.id])
+    expect(results.first).to have_attributes(source_identity: "snapshot", source_type: :snapshot, score: 1.0)
     expect(filtered.map(&:owner_id)).to eq([other_owner.id])
     expect(store.healthcheck).to eq(:ok)
     expect(store.capabilities).to include(:metadata_filtering, :pgvector)
@@ -203,6 +207,8 @@ RSpec.describe "Pgvector vector store adapter" do
       owner_id: document.owner_id,
       owner_model_name: document.owner_model_name,
       source: document.source,
+      source_identity: document.source_identity,
+      source_type: document.source_type,
       chunk_index: document.chunk_index,
       content: document.content,
       content_checksum: document.content_checksum,

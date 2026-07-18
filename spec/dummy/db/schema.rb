@@ -10,10 +10,18 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_07_15_000100) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_19_000200) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
+
+  create_table "accounts", force: :cascade do |t|
+    t.string "name", null: false
+    t.string "tenant_key", null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_key"], name: "index_accounts_on_tenant_key", unique: true
+  end
 
   create_table "action_text_rich_texts", force: :cascade do |t|
     t.string "name", null: false
@@ -107,11 +115,28 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_15_000100) do
     t.index ["product_variant_id"], name: "index_inventories_on_product_variant_id", unique: true
   end
 
+  create_table "invoices", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.string "number", null: false
+    t.string "status", null: false
+    t.decimal "amount", precision: 12, scale: 2, null: false
+    t.date "due_on", null: false
+    t.datetime "paid_at"
+    t.text "internal_note"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id", "number"], name: "index_invoices_on_account_id_and_number", unique: true
+    t.index ["account_id"], name: "index_invoices_on_account_id"
+  end
+
   create_table "maglev_chunks", force: :cascade do |t|
     t.string "owner_type", null: false
     t.bigint "owner_id", null: false
     t.string "owner_model_name", null: false
     t.string "source", null: false
+    t.string "source_identity", null: false
+    t.string "source_type", null: false
+    t.string "tenant_id"
     t.integer "chunk_index", null: false
     t.text "content", null: false
     t.string "content_checksum", null: false
@@ -121,8 +146,25 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_15_000100) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["embedding"], name: "index_maglev_chunks_on_embedding", opclass: :vector_cosine_ops, using: :hnsw
+    t.index ["owner_model_name", "owner_id", "source_type", "index_version"], name: "index_maglev_chunks_for_filtered_retrieval"
     t.index ["owner_model_name"], name: "index_maglev_chunks_on_owner_model_name"
     t.index ["owner_type", "owner_id", "source", "chunk_index"], name: "index_maglev_chunks_on_owner_source_chunk", unique: true
+    t.index ["tenant_id"], name: "index_maglev_chunks_on_tenant_id"
+  end
+
+  create_table "maglev_index_states", force: :cascade do |t|
+    t.string "owner_type", null: false
+    t.bigint "owner_id", null: false
+    t.string "status", null: false
+    t.string "active_index_version", limit: 64
+    t.integer "chunk_count", default: 0, null: false
+    t.datetime "last_success_at"
+    t.string "latest_failure_class"
+    t.datetime "latest_failure_at"
+    t.boolean "rebuild_required", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["owner_type", "owner_id"], name: "index_maglev_index_states_on_owner_type_and_owner_id", unique: true
   end
 
   create_table "order_items", force: :cascade do |t|
@@ -191,6 +233,18 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_15_000100) do
     t.index ["product_id"], name: "index_reviews_on_product_id"
   end
 
+  create_table "support_tickets", force: :cascade do |t|
+    t.bigint "account_id", null: false
+    t.string "subject", null: false
+    t.text "body", null: false
+    t.string "status", null: false
+    t.string "priority", null: false
+    t.text "private_note"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_support_tickets_on_account_id"
+  end
+
   create_table "taggings", force: :cascade do |t|
     t.bigint "tag_id", null: false
     t.string "taggable_type", null: false
@@ -216,6 +270,7 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_15_000100) do
   add_foreign_key "customer_tags", "customers"
   add_foreign_key "customer_tags", "tags"
   add_foreign_key "inventories", "product_variants"
+  add_foreign_key "invoices", "accounts"
   add_foreign_key "order_items", "orders"
   add_foreign_key "order_items", "product_variants"
   add_foreign_key "order_items", "products"
@@ -225,5 +280,6 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_15_000100) do
   add_foreign_key "product_variants", "products"
   add_foreign_key "reviews", "customers"
   add_foreign_key "reviews", "products"
+  add_foreign_key "support_tickets", "accounts"
   add_foreign_key "taggings", "tags"
 end

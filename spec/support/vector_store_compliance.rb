@@ -1,6 +1,30 @@
 # frozen_string_literal: true
 
 RSpec.shared_examples "a Maglev vector store" do
+  it "implements contract v2 with validated filters and normalized scores" do
+    store = described_class.new
+    document = document_for_compliance(owner_id: 1, chunk_index: 0, content: "exact")
+    store.upsert(documents: [document])
+
+    filters = Maglev::VectorStores::MetadataFilter.new(
+      owner_model_name: "Customer",
+      owner_ids: [1],
+      source_types: [:attribute],
+      index_version: "a" * 64
+    )
+    result = store.search(vector: [1.0, 0.0], filters: filters, limit: 1).first
+
+    expect(store.contract_version).to eq(2)
+    expect(result.score).to eq(1.0)
+    expect(result.source_identity).to eq("attribute:name")
+    expect { Maglev::VectorStores::MetadataFilter.new(secret: "escape") }
+      .to raise_error(ArgumentError, /Unsupported metadata filter/)
+    expect { Maglev::VectorStores::MetadataFilter.new(owner_ids: []) }
+      .to raise_error(ArgumentError, /non-empty Array/)
+    expect { Maglev::VectorStores::MetadataFilter.new(source_types: [:unknown]) }
+      .to raise_error(ArgumentError, /Unsupported source type/)
+  end
+
   it "upserts, searches with metadata filters, deletes documents, and reports health" do
     store = described_class.new
     documents = [
@@ -66,18 +90,41 @@ RSpec.shared_examples "a Maglev vector store" do
     expect(store.fetch(ids: old_documents.map(&:id))).to eq(replacement)
   end
 
+  it "isolates index versions and preserves the old generation on invalid replacement" do
+    store = described_class.new
+    current = document_for_compliance(owner_id: 1, chunk_index: 0, content: "current")
+    legacy = Maglev::VectorStores::Document.new(**document_attributes_for_compliance(owner_id: 2, chunk_index: 0, content: "legacy"),
+      index_version: "b" * 64)
+    store.upsert(documents: [current, legacy])
+
+    results = store.search(vector: [1.0, 0.0], filters: {owner_model_name: "Customer", index_version: "a" * 64}, limit: 10)
+    expect(results.map(&:content)).to eq(["current"])
+
+    expect do
+      store.replace_owner(owner_type: "Customer", owner_id: 1,
+        documents: [document_for_compliance(owner_id: 2, chunk_index: 0, content: "wrong")])
+    end.to raise_error(ArgumentError, /owner/)
+    expect(store.fetch(ids: [current.id])).to eq([current])
+  end
+
   def document_for_compliance(owner_id:, chunk_index:, content:)
-    Maglev::VectorStores::Document.new(
+    Maglev::VectorStores::Document.new(**document_attributes_for_compliance(owner_id: owner_id, chunk_index: chunk_index, content: content),
+      index_version: "a" * 64)
+  end
+
+  def document_attributes_for_compliance(owner_id:, chunk_index:, content:)
+    {
       owner_type: "Customer",
       owner_id: owner_id,
       owner_model_name: "Customer",
       source: "snapshot",
+      source_identity: "attribute:name",
+      source_type: :attribute,
       chunk_index: chunk_index,
       content: content,
       content_checksum: content,
       embedding_model: "fake",
-      index_version: "a" * 64,
       embedding: [1.0, 0.0]
-    )
+    }
   end
 end

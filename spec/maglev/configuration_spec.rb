@@ -4,6 +4,14 @@ require "spec_helper"
 require "maglev"
 
 RSpec.describe Maglev do
+  it "resolves tenant ids through an application-owned resolver" do
+    configuration = Maglev::Configuration.new
+    configuration.tenant_id_resolver = ->(record: nil, user: nil) { record || user }
+
+    expect(configuration.tenant_id(record: "record-tenant")).to eq("record-tenant")
+    expect(configuration.tenant_id(user: "user-tenant")).to eq("user-tenant")
+  end
+
   it "yields the configuration shell" do
     yielded = nil
 
@@ -69,5 +77,33 @@ RSpec.describe Maglev do
     expect(configuration.embedding_adapter_id).to eq("custom.embedding")
     expect(configuration.embedding_adapter_version).to eq("3")
     expect(configuration.application_index_version).to eq("release-2")
+  end
+
+  it "owns optional structured execution timeout, role, and wrapper hooks" do
+    configuration = Maglev::Configuration.new
+    wrapper = ->(&operation) { operation.call }
+
+    expect(configuration.structured_query_timeout).to eq(5)
+    expect(configuration.structured_query_role).to be_nil
+    expect(configuration.structured_query_executor_wrapper).to be_nil
+    expect(configuration.structured_evidence_max_rows).to eq(100)
+    expect(configuration.structured_evidence_max_bytes).to eq(32_768)
+    expect(configuration.audit_sink).to be_nil
+
+    configuration.structured_query_timeout = 2.5
+    configuration.structured_query_role = :reading
+    configuration.structured_query_executor_wrapper = wrapper
+
+    executor = Maglev.structured_executor(configuration: configuration)
+    expect(executor).to be_a(Maglev::StructuredExecutor)
+    expect { configuration.structured_query_timeout = 0 }.to raise_error(ArgumentError, /positive/)
+    expect { configuration.structured_evidence_max_rows = 0 }.to raise_error(ArgumentError, /positive/)
+  end
+
+  it "enforces a positive hard retrieval candidate ceiling" do
+    configuration = Maglev::Configuration.new
+
+    expect(configuration.retrieval_max_candidates).to eq(1_000)
+    expect { configuration.retrieval_max_candidates = 0 }.to raise_error(ArgumentError, /positive Integer/)
   end
 end

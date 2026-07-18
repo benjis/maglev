@@ -19,8 +19,10 @@ class TaskRecord
 
   include Maglev::ActiveRecordExtension
 
-  has_knowledge do
-    expose :name
+  maglev_resource :rake_task_records do
+    knowledge do
+      expose :name
+    end
   end
 
   attr_reader :id
@@ -78,7 +80,8 @@ RSpec.describe "Maglev rake tasks" do
     Maglev.instance_variable_set(:@configuration, configuration)
 
     Rake::Task["maglev:reindex"].invoke("TaskRecord")
-    first_version = store.fetch(ids: ["TaskRecord:1:snapshot:0"]).first.index_version
+    first_documents = store.search(vector: [1.0, 0.0], filters: {owner_model_name: "TaskRecord"}, limit: 10)
+    first_version = first_documents.first.index_version
     expect(adapter.calls).to eq(2)
 
     Rake::Task["maglev:reindex"].reenable
@@ -90,7 +93,8 @@ RSpec.describe "Maglev rake tasks" do
     Rake::Task["maglev:reindex"].invoke("TaskRecord")
 
     expect(adapter.calls).to eq(4)
-    expect(store.fetch(ids: ["TaskRecord:1:snapshot:0"]).first.index_version).not_to eq(first_version)
+    current_documents = store.search(vector: [1.0, 0.0], filters: {owner_model_name: "TaskRecord"}, limit: 10)
+    expect(current_documents.first.index_version).not_to eq(first_version)
   ensure
     Maglev.instance_variable_set(:@configuration, original)
   end
@@ -101,5 +105,13 @@ RSpec.describe "Maglev rake tasks" do
     expect do
       Rake::Task["maglev:status"].invoke
     end.to output(/TaskRecord/).to_stdout
+  end
+
+  it "scores a provider-free planner evaluation corpus" do
+    path = File.expand_path("../dummy/evaluations/planner_v1.json", __dir__)
+
+    expect do
+      Rake::Task["maglev:evaluate_planner"].invoke(path)
+    end.to output(/Planner evaluation v1: 12\/12 passed \(100.0%\)/).to_stdout
   end
 end

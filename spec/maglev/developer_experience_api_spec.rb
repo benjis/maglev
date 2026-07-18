@@ -15,8 +15,10 @@ class DxRecord
   def self.after_commit(*)
   end
 
-  has_knowledge do
-    expose :name
+  maglev_resource :dx_records do
+    knowledge do
+      expose :name
+    end
   end
 end
 

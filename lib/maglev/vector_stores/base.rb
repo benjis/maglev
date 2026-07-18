@@ -3,6 +3,10 @@
 module Maglev
   module VectorStores
     class Base
+      CONTRACT_VERSION = 2
+
+      def contract_version = CONTRACT_VERSION
+
       def fetch(ids:)
         raise NotImplementedError, "#{self.class.name} must implement #fetch"
       end

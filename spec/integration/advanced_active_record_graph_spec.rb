@@ -71,20 +71,28 @@ RSpec.describe "Advanced ActiveRecord graph support" do
       has_many :events, as: :eventable, class_name: "AdvancedGraphEvent"
     end)
 
-    AdvancedGraphTicket.has_knowledge do
-      expose :subject
+    AdvancedGraphTicket.maglev_resource(:advanced_graph_tickets) do
+      knowledge do
+        expose :subject
+      end
     end
-    AdvancedGraphGroup.has_knowledge do
-      expose :name
+    AdvancedGraphGroup.maglev_resource(:advanced_graph_groups) do
+      knowledge do
+        expose :name
+      end
     end
-    AdvancedGraphEvent.has_knowledge do
-      expose :message
+    AdvancedGraphEvent.maglev_resource(:advanced_graph_events) do
+      knowledge do
+        expose :message
+      end
     end
-    AdvancedGraphCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 10
-      include_related :groups, depth: 1, limit: 10, inverse: :customers
-      include_related :events, depth: 1, limit: 10, inverse: :eventable
+    AdvancedGraphCustomer.maglev_resource(:advanced_graph_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 10
+        include_related :groups, depth: 1, limit: 10, inverse: :customers
+        include_related :events, depth: 1, limit: 10, inverse: :eventable
+      end
     end
   end
 
@@ -102,9 +110,11 @@ RSpec.describe "Advanced ActiveRecord graph support" do
   end
 
   it "orders and limits an unloaded collection association in SQL" do
-    AdvancedGraphCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 2
+    AdvancedGraphCustomer.maglev_resource(:advanced_graph_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 2
+      end
     end
     customer = AdvancedGraphCustomer.create!(name: "Acme")
     AdvancedGraphTicket.create!(id: 30, customer: customer, subject: "Third")
@@ -130,9 +140,11 @@ RSpec.describe "Advanced ActiveRecord graph support" do
   end
 
   it "preserves unsaved records from a loaded collection association" do
-    AdvancedGraphCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 3
+    AdvancedGraphCustomer.maglev_resource(:advanced_graph_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 3
+      end
     end
     customer = AdvancedGraphCustomer.create!(name: "Acme")
     customer.tickets.create!(id: 30, subject: "Third")
@@ -149,9 +161,11 @@ RSpec.describe "Advanced ActiveRecord graph support" do
   end
 
   it "uses the same primary-key order for loaded and unloaded collection associations" do
-    AdvancedGraphCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 2
+    AdvancedGraphCustomer.maglev_resource(:advanced_graph_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 2
+      end
     end
     customer = AdvancedGraphCustomer.create!(name: "Acme")
     AdvancedGraphTicket.create!(id: 30, customer: customer, subject: "Third")
@@ -172,9 +186,11 @@ RSpec.describe "Advanced ActiveRecord graph support" do
       class_name: "AdvancedGraphTicket",
       inverse_of: :customer,
       foreign_key: :advanced_graph_customer_id
-    AdvancedGraphCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 2
+    AdvancedGraphCustomer.maglev_resource(:advanced_graph_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 2
+      end
     end
     customer = AdvancedGraphCustomer.create!(name: "Acme")
     AdvancedGraphTicket.create!(id: 30, customer: customer, subject: "Third")

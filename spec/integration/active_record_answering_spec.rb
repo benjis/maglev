@@ -9,6 +9,9 @@ RSpec.describe "ActiveRecord answering integration" do
         %w[id name description]
       end
     end)
+    AnswerableCustomer.maglev_resource :answerable_customers do
+      knowledge { expose :name, :description }
+    end
   end
 
   it "exposes class-level ask through Maglev::Answerer" do
@@ -33,7 +36,7 @@ RSpec.describe "ActiveRecord answering integration" do
     allow(Maglev::Answerer).to receive(:new).with(AnswerableCustomer).and_return(answerer)
 
     expect(customer.ask("Why unhappy?", limit: 2)).to eq("response")
-    expect(answerer).to have_received(:ask).with("Why unhappy?", limit: 2, owner: customer, user: nil, minimum_similarity: nil)
+    expect(answerer).to have_received(:ask).with("Why unhappy?", limit: 2, owner: customer, user: nil, minimum_similarity: nil, chunks_per_owner: nil)
   end
 
   it "uses the configured default question for explain" do
@@ -43,6 +46,6 @@ RSpec.describe "ActiveRecord answering integration" do
     allow(Maglev::Answerer).to receive(:new).with(AnswerableCustomer).and_return(answerer)
 
     expect(customer.explain(limit: 1)).to eq("response")
-    expect(answerer).to have_received(:ask).with("Explain this record.", limit: 1, owner: customer, user: nil, minimum_similarity: nil)
+    expect(answerer).to have_received(:ask).with("Explain this record.", limit: 1, owner: customer, user: nil, minimum_similarity: nil, chunks_per_owner: nil)
   end
 end

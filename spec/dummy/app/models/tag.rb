@@ -6,8 +6,10 @@ class Tag < ApplicationRecord
   has_many :customer_tags, inverse_of: :tag, dependent: :destroy
   has_many :customers, through: :customer_tags
 
-  has_knowledge do
-    expose :name
-    tags :tag
+  maglev_resource :tags do
+    knowledge do
+      expose :name
+      tags :tag
+    end
   end
 end

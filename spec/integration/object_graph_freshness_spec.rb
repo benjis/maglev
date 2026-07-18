@@ -84,15 +84,21 @@ RSpec.describe "Object graph knowledge freshness" do
       has_many :notes, class_name: "GraphFreshnessNote", inverse_of: :customer, foreign_key: :graph_customer_id
     end)
 
-    GraphFreshnessTicket.has_knowledge do
-      expose :subject
+    GraphFreshnessTicket.maglev_resource(:graph_freshness_tickets) do
+      knowledge do
+        expose :subject
+      end
     end
-    GraphFreshnessNote.has_knowledge do
-      expose :body
+    GraphFreshnessNote.maglev_resource(:graph_freshness_notes) do
+      knowledge do
+        expose :body
+      end
     end
-    GraphFreshnessCustomer.has_knowledge do
-      expose :name
-      include_related :tickets, depth: 1, limit: 2
+    GraphFreshnessCustomer.maglev_resource(:graph_freshness_customers) do
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 2
+      end
     end
   end
 
@@ -135,9 +141,11 @@ RSpec.describe "Object graph knowledge freshness" do
     callback_count = GraphFreshnessTicket._commit_callbacks.count { |callback| callback.filter == :maglev_reindex_dependents }
 
     2.times do
-      GraphFreshnessCustomer.has_knowledge do
-        expose :name
-        include_related :tickets, depth: 1, limit: 2
+      GraphFreshnessCustomer.maglev_resource(:graph_freshness_customers) do
+        knowledge do
+          expose :name
+          include_related :tickets, depth: 1, limit: 2
+        end
       end
     end
 
@@ -153,8 +161,8 @@ RSpec.describe "Object graph knowledge freshness" do
     perform_enqueued_jobs
 
     search_result = GraphFreshnessCustomer.search("risk", limit: 1).first
-    answer = GraphFreshnessCustomer.ask("Which customer is at risk?", limit: 1)
-    instance_answer = customer.ask("Why is this customer at risk?", limit: 1)
+    answer = GraphFreshnessCustomer.ask("Which customer is at risk?", limit: 1, chunks_per_owner: 4)
+    instance_answer = customer.ask("Why is this customer at risk?", limit: 1, chunks_per_owner: 4)
 
     expect(search_result.content).to include("tickets[0].subject: Escalated churn risk")
     expect(answer.sources.first[:content]).to include("tickets[0].subject: Escalated churn risk")
