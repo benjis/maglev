@@ -52,4 +52,30 @@ RSpec.describe Maglev::Adapters::FaradayPlanner do
       )
     end.to raise_error(Maglev::PermanentProviderError, /invalid structured output/)
   end
+
+  it "supports JSON object output for providers without JSON Schema response formats" do
+    request = nil
+    http = connection do |stubs|
+      stubs.post("/v1/chat/completions") do |environment|
+        request = environment.body.is_a?(Hash) ? JSON.parse(JSON.generate(environment.body)) : JSON.parse(environment.body)
+        output = {"status" => "unsupported", "message" => "Outside registered capabilities"}
+        [200, {"Content-Type" => "application/json"},
+          {choices: [{message: {content: JSON.generate(output)}}]}.to_json]
+      end
+    end
+
+    adapter = described_class.new(provider: provider, connection: http, response_format: :json_object)
+    adapter.plan(question: "Delete orders", schema_snapshot: snapshot, constraints: {},
+      query_ir_schema: Maglev::Planner::QUERY_IR_SCHEMA)
+
+    expect(request.fetch("response_format")).to eq("type" => "json_object")
+  end
+
+  it "rejects unknown response formats during adapter configuration" do
+    [:freeform, nil].each do |response_format|
+      expect do
+        described_class.new(provider: provider, response_format: response_format)
+      end.to raise_error(Maglev::ConfigurationError, /response format/)
+    end
+  end
 end

@@ -5,6 +5,10 @@ require_relative "knowledge_config"
 
 module Maglev
   class ResourceConfig
+    SUPPORTED_PARAMETER_TYPES = %i[
+      string integer float decimal boolean date datetime timestamp time
+    ].freeze
+
     Field = Struct.new(:name, :description, :synonyms, :enum_values, :sensitive) do
       def initialize(**attributes)
         attributes[:name] = attributes.fetch(:name).to_s
@@ -31,6 +35,9 @@ module Maglev
     Parameter = Struct.new(:type, :required, :nullable, :enum_values, :minimum, :maximum) do
       def initialize(**attributes)
         attributes[:type] = attributes.fetch(:type).to_sym
+        unless SUPPORTED_PARAMETER_TYPES.include?(attributes[:type])
+          raise ConfigurationError, "Unsupported scope parameter type #{attributes[:type]}"
+        end
         attributes[:required] = !!attributes[:required]
         attributes[:nullable] = !!attributes[:nullable]
         attributes[:enum_values] = Array(attributes[:enum_values]).map(&:to_s).uniq.freeze
@@ -42,7 +49,7 @@ module Maglev
     Scope = Struct.new(:name, :parameters, :description) do
       def initialize(**attributes)
         attributes[:name] = attributes.fetch(:name).to_s
-        attributes[:parameters] = attributes.fetch(:parameters).to_h { |name, parameter| [name.to_s, parameter] }.sort.to_h.freeze
+        attributes[:parameters] = attributes.fetch(:parameters).to_h { |name, parameter| [name.to_s, parameter] }.freeze
         attributes[:description] = attributes[:description]&.to_s
         super
         freeze

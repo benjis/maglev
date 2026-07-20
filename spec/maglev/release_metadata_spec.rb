@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "spec_helper"
+require "open3"
 
 RSpec.describe "release metadata" do
   subject(:specification) { Gem::Specification.load(File.expand_path("../../maglev.gemspec", __dir__)) }
@@ -10,10 +11,21 @@ RSpec.describe "release metadata" do
     expect(specification.version.to_s).to eq("0.2.0")
     expect(specification.require_paths).to eq(["lib"])
     expect(specification.files).to include("lib/maglev.rb")
+    expect(specification.files).to include("lib/maglev-rb.rb")
     expect(specification.files).not_to include("AGENTS.md")
     expect(specification.files).to be_none { |path| path.start_with?("docs/superpowers/") }
     expect(specification.dependencies.map(&:name)).to include("faraday")
     expect(specification.dependencies.map(&:name)).not_to include("ruby_llm")
+  end
+
+  it "loads Maglev through the published gem name" do
+    library_path = File.expand_path("../../lib", __dir__)
+    output, error, status = Open3.capture3(
+      Gem.ruby, "-I", library_path, "-e", 'require "maglev-rb"; print Maglev::VERSION'
+    )
+
+    expect(status).to be_success, error
+    expect(output).to eq("0.2.0")
   end
 
   it "links the package to its public source repository without placeholder contacts" do

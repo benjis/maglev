@@ -32,6 +32,7 @@ RSpec.describe "structured query compilation and execution" do
       self.table_name = "structured_orders"
       belongs_to :customer, class_name: "StructuredCustomer"
       scope :placed_after, ->(value) { where(placed_at: value..) }
+      scope :total_between, ->(minimum, maximum) { where(total: minimum..maximum) }
       scope :dangerously_unscoped, -> { unscope(:where) }
       scope :widen_limit, -> { limit(100) }
       scope :locked_rows, -> { lock }
@@ -53,6 +54,10 @@ RSpec.describe "structured query compilation and execution" do
         field :note
         association :customer, resource: :structured_customers
         scope :placed_after, parameters: {value: {type: :datetime, required: true}}
+        scope :total_between, parameters: {
+          minimum: {type: :decimal, required: true},
+          maximum: {type: :decimal, required: true}
+        }
         aggregates count: true, sum: [:total], average: [:total], minimum: [:total], maximum: [:total]
         limits rows: 10, operations: 10, joins: 2
         authorization :public
@@ -109,6 +114,14 @@ RSpec.describe "structured query compilation and execution" do
     expect(values).to eq([12])
     expect(sql).to include("SET LOCAL statement_timeout = 2000", "SET TRANSACTION READ ONLY")
     expect(plan.to_sql).to include(%("structured_orders"."tenant_id" = 1))
+  end
+
+  it "passes registered scope parameters in declaration order" do
+    plan = compile(
+      "scopes" => [{"name" => "total_between", "parameters" => {"minimum" => 10, "maximum" => 20}}]
+    )
+
+    expect(plan.relation.map(&:total)).to eq([12])
   end
 
   it "compiles every approved comparison, set, and null predicate" do
@@ -357,6 +370,22 @@ RSpec.describe "structured query compilation and execution" do
     expect(result.evidence.records).to match([include("status" => "paid", "total" => 12)])
     expect(result.evidence.records.first).not_to have_key("tenant_id")
     expect(result.evidence.filters).to eq([{"field" => "status", "operator" => "eq", "value" => "paid"}])
+  end
+
+  it "serializes bounded-array predicates into structured evidence" do
+    adapter = Maglev::FakePlannerAdapter.new([{"status" => "ready", "ir" => {
+      "version" => 1, "root" => "structured_orders", "operation" => "records",
+      "scopes" => [], "filters" => [{"field" => "total", "operator" => "between", "value" => [10, 20]}],
+      "joins" => [], "sort" => [], "distinct" => false, "limit" => 10
+    }}])
+    plan = Maglev.plan("Orders between ten and twenty", resource: :structured_orders,
+      base_relation: StructuredOrder.where(tenant_id: 1), adapter: adapter)
+
+    result = Maglev.execute(plan)
+
+    expect(result.evidence.filters).to eq([
+      {"field" => "total", "operator" => "between", "value" => [10, 20]}
+    ])
   end
 
   it "does not enumerate relation evidence until requested and applies an independent evidence row budget" do

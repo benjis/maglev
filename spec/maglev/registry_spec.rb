@@ -119,4 +119,20 @@ RSpec.describe Maglev::Registry do
       model.maglev_resource(:closed_products) { knowledge { expose_attached :missing } }
     end.to raise_error(Maglev::ConfigurationError, /Unknown attached knowledge source/)
   end
+
+  it "rejects unsupported scope parameter types at registration" do
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "registry_products"
+      scope :priced_above, ->(amount) { where(price: amount..) }
+    end
+    stub_const("TypedRegistryProduct", model)
+
+    expect do
+      model.maglev_resource(:typed_registry_products) do
+        queryable do
+          scope :priced_above, parameters: {amount: {type: :number, required: true}}
+        end
+      end
+    end.to raise_error(Maglev::ConfigurationError, /Unsupported scope parameter type number/)
+  end
 end

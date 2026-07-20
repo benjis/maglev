@@ -105,6 +105,8 @@ module Maglev
       raise QueryCompilationError, "Registered scope cannot widen the base relation" unless preserves_relation?(relation, scoped)
 
       scoped
+    rescue ActiveRecord::ReadOnlyError
+      raise QueryCompilationError, "Registered scope cannot widen the base relation or introduce unsafe clauses"
     end
 
     def apply_predicate(relation, root_model, predicate)

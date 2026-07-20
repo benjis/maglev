@@ -2,6 +2,7 @@
 
 require "json"
 
+require_relative "../errors"
 require_relative "../planner_adapter"
 require_relative "faraday_client"
 
@@ -9,7 +10,13 @@ module Maglev
   module Adapters
     class FaradayPlanner < PlannerAdapter
       MAX_QUESTION_BYTES = 8_192
-      def initialize(provider: Maglev.configuration.generation_provider, connection: nil)
+      RESPONSE_FORMATS = %i[json_schema json_object].freeze
+
+      def initialize(provider: Maglev.configuration.generation_provider, connection: nil, response_format: :json_schema)
+        unless response_format.respond_to?(:to_sym) && RESPONSE_FORMATS.include?(response_format.to_sym)
+          raise ConfigurationError, "Unsupported planner response format #{response_format.inspect}"
+        end
+        @response_format = response_format.to_sym
         @provider = provider
         @client = FaradayClient.new(@provider, connection: connection)
       end
@@ -37,11 +44,17 @@ module Maglev
             {role: "system", content: system_prompt(query_ir_schema)},
             {role: "user", content: user_prompt(question, snapshot, constraints, repair)}
           ],
-          response_format: {
-            type: "json_schema",
-            json_schema: {name: "maglev_structured_plan", strict: false, schema: response_schema(query_ir_schema)}
-          },
+          response_format: response_format(query_ir_schema),
           stream: false
+        }
+      end
+
+      def response_format(query_ir_schema)
+        return {type: "json_object"} if @response_format == :json_object
+
+        {
+          type: "json_schema",
+          json_schema: {name: "maglev_structured_plan", strict: false, schema: response_schema(query_ir_schema)}
         }
       end
 

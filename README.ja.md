@@ -103,7 +103,7 @@ Generator は initializer、`maglev_chunks`、source/tenant metadata、HNSW cosi
 
 ## 設定
 
-組み込み embedding、generation、planner クライアントは OpenAI-compatible HTTP API を使います。Embedding と generation は別 provider にできます。
+組み込み embedding と generation クライアントは OpenAI-compatible HTTP API を使います。Planner は既定で OpenAI の `json_schema` response format を使い、未対応の provider では制約の弱い `json_object` format を選択できます。Embedding と generation は別 provider にできます。
 
 ```ruby
 Maglev.configure do |config|
@@ -121,6 +121,8 @@ Maglev.configure do |config|
   end
 
   config.planner_adapter = Maglev::Adapters::FaradayPlanner.new
+  # json_schema に対応していない provider の場合：
+  # config.planner_adapter = Maglev::Adapters::FaradayPlanner.new(response_format: :json_object)
   config.routing_adapter = MyRoutingAdapter.new # mode: :auto の場合のみ必要
 
   config.chunk_size = 1000
@@ -333,6 +335,9 @@ Resource-level DSL：
 | `authorization :required` | Default。`authorizer` が承認した場合だけ schema snapshot に入ります。 |
 | `authorization :public` | Resource schema を public にします。Record access は supplied relation に制約されます。 |
 | `allow_unscoped_model_queries true` | Base relation なしの structured request を許可します。既定は off です。 |
+
+Scope parameter の `type` は `:string`、`:integer`、`:float`、`:decimal`、
+`:boolean`、`:date`、`:datetime`、`:timestamp`、`:time` を受け付けます。未対応の type は resource 登録時に拒否されます。
 
 `knowledge` DSL：
 

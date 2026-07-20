@@ -64,7 +64,15 @@ module Maglev
 
       def to_h
         result = {"field" => field.to_s, "operator" => operator.to_s}
-        result["value"] = value.respond_to?(:to_h) ? value.to_h : value unless value.nil?
+        unless value.nil?
+          result["value"] = if value.is_a?(Array)
+            value.map { |item| item.respond_to?(:to_h) ? item.to_h : item }
+          elsif value.respond_to?(:to_h)
+            value.to_h
+          else
+            value
+          end
+        end
         result.freeze
       end
     end

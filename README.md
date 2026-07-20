@@ -117,8 +117,10 @@ Review generated migrations when owner primary keys are UUIDs.
 
 ## Configuration
 
-The built-in embedding, generation, and planner clients use OpenAI-compatible
-HTTP endpoints. Embedding and generation may use different providers.
+The built-in embedding and generation clients use OpenAI-compatible HTTP
+endpoints. The planner defaults to the OpenAI `json_schema` response format;
+providers without that capability may use the less constrained `json_object`
+format. Embedding and generation may use different providers.
 
 ```ruby
 Maglev.configure do |config|
@@ -136,6 +138,8 @@ Maglev.configure do |config|
   end
 
   config.planner_adapter = Maglev::Adapters::FaradayPlanner.new
+  # For providers without json_schema support:
+  # config.planner_adapter = Maglev::Adapters::FaradayPlanner.new(response_format: :json_object)
   config.routing_adapter = MyRoutingAdapter.new # required only for mode: :auto
 
   config.chunk_size = 1000
@@ -362,6 +366,10 @@ Resource-level methods:
 | `authorization :required` | Default. The resource enters a schema snapshot only when `authorizer` approves it. |
 | `authorization :public` | Marks the resource schema public; record access must still respect the supplied relation. |
 | `allow_unscoped_model_queries true` | Allows structured requests without a supplied base relation. Off by default; use only for genuinely public data. |
+
+Scope parameter `type` accepts `:string`, `:integer`, `:float`, `:decimal`,
+`:boolean`, `:date`, `:datetime`, `:timestamp`, or `:time`. Unsupported types
+are rejected when the resource is registered.
 
 `knowledge` methods:
 

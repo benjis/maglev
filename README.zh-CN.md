@@ -100,7 +100,7 @@ Generator 会创建 initializer、`maglev_chunks`、来源/租户元数据、HNS
 
 ## 配置
 
-内置 embedding、generation 和 planner 客户端使用 OpenAI-compatible HTTP 协议。Embedding 与 generation 可以使用不同服务商。
+内置 embedding 和 generation 客户端使用 OpenAI-compatible HTTP 协议。Planner 默认使用 OpenAI 的 `json_schema` response format；不支持该能力的服务商可以改用约束较弱的 `json_object` format。Embedding 与 generation 可以使用不同服务商。
 
 ```ruby
 Maglev.configure do |config|
@@ -118,6 +118,8 @@ Maglev.configure do |config|
   end
 
   config.planner_adapter = Maglev::Adapters::FaradayPlanner.new
+  # 用于不支持 json_schema 的服务商：
+  # config.planner_adapter = Maglev::Adapters::FaradayPlanner.new(response_format: :json_object)
   config.routing_adapter = MyRoutingAdapter.new # 仅 mode: :auto 需要
 
   config.chunk_size = 1000
@@ -331,6 +333,9 @@ ticket.maglev_index_status
 | `authorization :required` | 默认值。只有 `authorizer` 批准后，资源才进入 schema snapshot。 |
 | `authorization :public` | 资源 schema 公开；记录访问仍受传入 relation 约束。 |
 | `allow_unscoped_model_queries true` | 允许没有 base relation 的结构化请求。默认关闭，只应用于真正公开的数据。 |
+
+Scope 参数 `type` 支持 `:string`、`:integer`、`:float`、`:decimal`、
+`:boolean`、`:date`、`:datetime`、`:timestamp` 和 `:time`。注册资源时会拒绝不支持的类型。
 
 `knowledge` DSL：
 

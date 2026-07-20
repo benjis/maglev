@@ -59,10 +59,11 @@ module Maglev
       end
 
       def persist(owner_type, owner_id, **attributes)
-        IndexState.transaction do
-          row = IndexState.lock.find_or_initialize_by(owner_type: owner_type.to_s, owner_id: owner_id)
-          row.assign_attributes(attributes)
-          row.save!
+        row = IndexState.create_or_find_by!(owner_type: owner_type.to_s, owner_id: owner_id) do |state|
+          state.assign_attributes(attributes)
+        end
+        row.with_lock do
+          row.update!(attributes)
         end
       end
 
