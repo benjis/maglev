@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    maglev-rb (0.2.0)
+    maglev-rb (0.2.1)
       faraday (~> 2.0)
       neighbor (~> 0.6)
       rails (>= 7.1, < 9.0)

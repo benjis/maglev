@@ -87,7 +87,7 @@ Maglev 需要 Ruby 3.3+、Rails 7.1 或 8.0、PostgreSQL 和 pgvector。
 
 ```ruby
 # Gemfile
-gem "maglev-rb", "~> 0.2.0"
+gem "maglev-rb", "~> 0.2.1"
 ```
 
 ```bash

@@ -2,6 +2,14 @@
 
 All notable changes are documented here. Maglev follows Semantic Versioning.
 
+## [0.2.1] - 2026-07-21
+
+### Fixed
+
+- Added the documented `maglev-rb` require entry point and tightened release metadata coverage.
+- Preserved structured query values through planner serialization and compilation, including association paths.
+- Improved resource registration validation and made index diagnostics updates safer.
+
 ## [0.2.0] - 2026-07-19
 
 ### Added

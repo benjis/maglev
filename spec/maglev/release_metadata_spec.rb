@@ -6,9 +6,9 @@ require "open3"
 RSpec.describe "release metadata" do
   subject(:specification) { Gem::Specification.load(File.expand_path("../../maglev.gemspec", __dir__)) }
 
-  it "packages version 0.2.0 as maglev-rb while preserving the Maglev require path" do
+  it "packages version 0.2.1 as maglev-rb while preserving the Maglev require path" do
     expect(specification.name).to eq("maglev-rb")
-    expect(specification.version.to_s).to eq("0.2.0")
+    expect(specification.version.to_s).to eq("0.2.1")
     expect(specification.require_paths).to eq(["lib"])
     expect(specification.files).to include("lib/maglev.rb")
     expect(specification.files).to include("lib/maglev-rb.rb")
@@ -25,7 +25,7 @@ RSpec.describe "release metadata" do
     )
 
     expect(status).to be_success, error
-    expect(output).to eq("0.2.0")
+    expect(output).to eq("0.2.1")
   end
 
   it "links the package to its public source repository without placeholder contacts" do

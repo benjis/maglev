@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-> **Technical translation review pending:** この日本語版は v0.2.0 のコードと英語版 README に同期していますが、公開前に日本語ネイティブによる技術レビューが必要です。英語版 [README.md](README.md) が正本です。
+> **Technical translation review pending:** この日本語版は v0.2.1 のコードと英語版 README に同期していますが、公開前に日本語ネイティブによる技術レビューが必要です。英語版 [README.md](README.md) が正本です。
 
 [![CI](https://github.com/benjis/maglev/actions/workflows/ci.yml/badge.svg)](https://github.com/benjis/maglev/actions/workflows/ci.yml)
 [![Ruby](https://img.shields.io/badge/Ruby-3.3%2B-CC342D.svg)](https://www.ruby-lang.org/)
@@ -90,7 +90,7 @@ Ruby 3.3+、Rails 7.1 または 8.0、PostgreSQL、pgvector が必要です。
 
 ```ruby
 # Gemfile
-gem "maglev-rb", "~> 0.2.0"
+gem "maglev-rb", "~> 0.2.1"
 ```
 
 ```bash

@@ -9,9 +9,9 @@ RSpec.describe "Maglev release readiness" do
   it "keeps the MVP version and changelog release heading consistent" do
     changelog = File.read(File.join(root, "CHANGELOG.md"))
 
-    expect(Maglev::VERSION).to eq("0.2.0")
+    expect(Maglev::VERSION).to eq("0.2.1")
     expect(specification.version.to_s).to eq(Maglev::VERSION)
-    expect(changelog).to include("## [0.2.0] - 2026-07-19")
+    expect(changelog).to include("## [0.2.1] - 2026-07-21")
     expect(changelog).to include("Upgrade from 0.1.x")
   end
 
