@@ -10,6 +10,9 @@ module Maglev
   class AuthorizationError < Error
   end
 
+  class PlanValidationError < Error
+  end
+
   class ProviderError < Error
   end
 

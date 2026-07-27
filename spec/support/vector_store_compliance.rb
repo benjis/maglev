@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.shared_examples "a Maglev vector store" do
-  it "implements contract v2 with validated filters and normalized scores" do
+  it "implements contract v3 with validated filters and normalized scores" do
     store = described_class.new
     document = document_for_compliance(owner_id: 1, chunk_index: 0, content: "exact")
     store.upsert(documents: [document])
@@ -14,7 +14,7 @@ RSpec.shared_examples "a Maglev vector store" do
     )
     result = store.search(vector: [1.0, 0.0], filters: filters, limit: 1).first
 
-    expect(store.contract_version).to eq(2)
+    expect(store.contract_version).to eq(3)
     expect(result.score).to eq(1.0)
     expect(result.source_identity).to eq("attribute:name")
     expect { Maglev::VectorStores::MetadataFilter.new(secret: "escape") }
@@ -105,6 +105,33 @@ RSpec.shared_examples "a Maglev vector store" do
         documents: [document_for_compliance(owner_id: 2, chunk_index: 0, content: "wrong")])
     end.to raise_error(ArgumentError, /owner/)
     expect(store.fetch(ids: [current.id])).to eq([current])
+  end
+
+  it "builds and replaces one named generation without mutating another" do
+    store = described_class.new
+    active = Maglev::VectorStores::Document.new(
+      **document_attributes_for_compliance(owner_id: 1, chunk_index: 0, content: "active"),
+      index_version: "a" * 64,
+      generation: "active"
+    )
+    candidate = Maglev::VectorStores::Document.new(
+      **document_attributes_for_compliance(owner_id: 1, chunk_index: 0, content: "candidate"),
+      index_version: "a" * 64,
+      generation: "candidate"
+    )
+    store.upsert(documents: [active])
+
+    store.replace_owner(
+      owner_type: "Customer",
+      owner_id: 1,
+      generation: "candidate",
+      documents: [candidate]
+    )
+
+    expect(store.search(vector: [1.0, 0.0], filters: {generation: "active"}, limit: 10).map(&:content))
+      .to eq(["active"])
+    expect(store.search(vector: [1.0, 0.0], filters: {generation: "candidate"}, limit: 10).map(&:content))
+      .to eq(["candidate"])
   end
 
   def document_for_compliance(owner_id:, chunk_index:, content:)

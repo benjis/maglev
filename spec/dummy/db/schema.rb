@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.1].define(version: 2026_07_19_000200) do
+ActiveRecord::Schema[8.0].define(version: 2026_07_27_000300) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "vector"
@@ -139,17 +139,42 @@ ActiveRecord::Schema[7.1].define(version: 2026_07_19_000200) do
     t.string "tenant_id"
     t.integer "chunk_index", null: false
     t.text "content", null: false
+    t.jsonb "context", default: {}, null: false
     t.string "content_checksum", null: false
     t.string "embedding_model", null: false
     t.string "index_version", limit: 64, null: false
     t.vector "embedding", limit: 3, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "resource_identifier"
+    t.string "representation_version"
+    t.string "knowledge_policy_digest", limit: 64
+    t.string "generation"
     t.index ["embedding"], name: "index_maglev_chunks_on_embedding", opclass: :vector_cosine_ops, using: :hnsw
+    t.index ["generation", "owner_type", "owner_id", "source", "chunk_index"], name: "index_maglev_chunks_on_generation_owner_source_chunk", unique: true
+    t.index ["generation", "resource_identifier", "owner_id", "source_type", "index_version"], name: "index_maglev_chunks_for_generation_retrieval"
     t.index ["owner_model_name", "owner_id", "source_type", "index_version"], name: "index_maglev_chunks_for_filtered_retrieval"
     t.index ["owner_model_name"], name: "index_maglev_chunks_on_owner_model_name"
-    t.index ["owner_type", "owner_id", "source", "chunk_index"], name: "index_maglev_chunks_on_owner_source_chunk", unique: true
+    t.index ["resource_identifier", "owner_id", "source_type", "index_version"], name: "index_maglev_chunks_for_v03_filtered_retrieval"
     t.index ["tenant_id"], name: "index_maglev_chunks_on_tenant_id"
+  end
+
+  create_table "maglev_index_generations", force: :cascade do |t|
+    t.string "generation", null: false
+    t.string "status", null: false
+    t.string "representation_version", null: false
+    t.jsonb "manifest", default: {}, null: false
+    t.integer "expected_record_count", null: false
+    t.integer "indexed_record_count", default: 0, null: false
+    t.string "failure_class"
+    t.datetime "started_at", null: false
+    t.datetime "completed_at"
+    t.datetime "activated_at"
+    t.datetime "failed_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["generation"], name: "index_maglev_index_generations_on_generation", unique: true
+    t.index ["status"], name: "index_maglev_index_generations_on_single_active", unique: true, where: "((status)::text = 'active'::text)"
   end
 
   create_table "maglev_index_states", force: :cascade do |t|

@@ -48,7 +48,9 @@ module Maglev
     end
 
     def entry_for(result, marker, content)
-      "#{marker} #{owner_label(result.owner)} chunk #{result.chunk_index} source: #{result.source}\n#{content}"
+      context = result.context.map { |key, value| "#{key}: #{value}" }.join(", ")
+      suffix = context.empty? ? "" : "\ncontext: #{context}"
+      "#{marker} #{owner_label(result.owner)} chunk #{result.chunk_index} source: #{result.source}\n#{content}#{suffix}"
     end
 
     def source_for(result, marker, content)
@@ -59,6 +61,7 @@ module Maglev
         source: result.source,
         chunk_index: result.chunk_index,
         content: content,
+        context: result.context,
         distance: result.distance,
         similarity: result.similarity
       }

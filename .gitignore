@@ -5,11 +5,8 @@ log/
 **/tmp/
 **/log/
 .DS_Store
-CONTEXT.md
-TODO.md
 AGENTS.md
-AGENTS_HANDOFF.md
-IMPLEMENTATION_PLAN.md
 .codegraph/
-.handoff/
-spec/guardrails/
+.scratch/
+.ua/
+docs/

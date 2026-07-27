@@ -20,8 +20,9 @@ RSpec.describe "Maglev ActiveRecord extension" do
 
     KnowledgeCustomer.maglev_resource :knowledge_customers do
       knowledge do
-        expose :name, :industry, :description
-        hide :internal_note
+        content :name, :description
+        context :industry
+        prohibit :internal_note
         tags :customer, :commercial
       end
     end
@@ -33,13 +34,15 @@ RSpec.describe "Maglev ActiveRecord extension" do
     customer.description = nil
     customer.internal_note = "sensitive"
 
-    expect(KnowledgeCustomer.maglev_config.exposed_attributes).to eq(%w[name industry description])
+    expect(KnowledgeCustomer.maglev_config.content_attributes).to eq(%w[name description])
     expect(customer.maglev_snapshot).to eq(<<~TEXT.chomp)
       KnowledgeCustomer#123
       name: Acme Pty Ltd
-      industry: Retail
-      tags: customer, commercial
     TEXT
+    expect(customer.maglev_snapshot_result.metadata[:knowledge_context]).to eq(
+      "industry" => "Retail",
+      "tags" => %w[customer commercial]
+    )
   end
 
   it "does not let inherited configuration mutate the parent model" do
@@ -87,7 +90,7 @@ RSpec.describe "Maglev ActiveRecord extension" do
     expect(KnowledgeCustomer._save_callbacks.count).to eq(callback_count_before)
   end
 
-  it "rejects RAG APIs when the resource does not declare knowledge" do
+  it "rejects lower-level retrieval APIs when the resource does not declare knowledge" do
     KnowledgeCustomer.maglev_resource :query_only_customers do
       queryable do
         field :name
@@ -98,9 +101,7 @@ RSpec.describe "Maglev ActiveRecord extension" do
 
     expect { KnowledgeCustomer.search("Acme") }.to raise_error(Maglev::ConfigurationError, /declare maglev_resource knowledge/)
     expect { KnowledgeCustomer.retrieve("Acme") }.to raise_error(Maglev::ConfigurationError, /declare maglev_resource knowledge/)
-    expect { KnowledgeCustomer.ask("Who is Acme?") }.to raise_error(Maglev::ConfigurationError, /declare maglev_resource knowledge/)
     expect { customer.maglev_snapshot }.to raise_error(Maglev::ConfigurationError, /declare maglev_resource knowledge/)
-    expect { customer.ask("Who is Acme?") }.to raise_error(Maglev::ConfigurationError, /declare maglev_resource knowledge/)
   end
 
   it "removes RAG configuration and callbacks when knowledge is withdrawn" do
@@ -143,23 +144,5 @@ RSpec.describe "Maglev ActiveRecord extension" do
     Maglev.configuration.snapshot_attribute_max_characters = 20_000
     Maglev.configuration.chunk_size = 1_500
     Maglev.configuration.snapshot_max_chunks = 100
-  end
-
-  it "shares the unified result envelope across model and base-relation entry points" do
-    KnowledgeCustomer.maglev_resource(:knowledge_customers) do
-      knowledge { expose :name }
-    end
-    classifier = Class.new do
-      def classify(**) = raise("explicit routing must not classify")
-    end.new
-    router = Maglev::Router.new(classifier: classifier)
-
-    expect do
-      KnowledgeCustomer.maglev_request("combine data and evidence", mode: :hybrid, router: router)
-    end.to raise_error(Maglev::ConfigurationError, /fixed hybrid plan/)
-    expect do
-      KnowledgeCustomer.where(id: 123).maglev_request("combine data and evidence",
-        mode: :hybrid, router: router)
-    end.to raise_error(Maglev::ConfigurationError, /fixed hybrid plan/)
   end
 end

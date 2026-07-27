@@ -5,7 +5,10 @@ module Maglev
     class MetadataFilter
       include Enumerable
 
-      FIELDS = %i[owner_type owner_id owner_ids owner_model_name tenant_id source_type source_types index_version].freeze
+      FIELDS = %i[
+        owner_type owner_id owner_ids owner_model_name tenant_id source_type source_types
+        resource_identifier representation_version knowledge_policy_digest index_version generation
+      ].freeze
       SOURCE_TYPES = %i[snapshot attribute related_record rich_text attachment tag].freeze
       MAX_VALUES = 1_000
 
@@ -39,7 +42,10 @@ module Maglev
         end
         Array(values[:source_type]).each { |value| validate_source_type!(value) } if values.key?(:source_type)
         Array(values[:source_types]).each { |value| validate_source_type!(value) } if values.key?(:source_types)
-        %i[owner_type owner_model_name tenant_id index_version].each do |field|
+        %i[
+          owner_type owner_model_name tenant_id resource_identifier representation_version
+          knowledge_policy_digest index_version generation
+        ].each do |field|
           next unless values.key?(field)
           raise ArgumentError, "#{field} must be a non-empty String" unless values[field].is_a?(String) && !values[field].empty?
         end

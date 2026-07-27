@@ -13,6 +13,9 @@ module Maglev
           if existing && existing.model_class != entry.model_class && existing.model_class.name != entry.model_class.name
             raise ConfigurationError, "Maglev resource #{entry.identifier} is already registered"
           end
+          @entries.delete_if do |identifier, registered|
+            identifier != entry.identifier && registered.model_class.name == entry.model_class.name
+          end
           @entries[entry.identifier] = entry
           @snapshot_cache = {}
         end
@@ -24,6 +27,7 @@ module Maglev
       end
 
       def entries
+        KnowledgeRegistry.load_application_models!
         mutex.synchronize { (@entries || {}).values.sort_by(&:identifier).freeze }
       end
 
@@ -37,7 +41,7 @@ module Maglev
         cache_key = [identifiers, limits.sort].freeze if user.nil? && authorizer.nil?
         mutex.synchronize { return @snapshot_cache[cache_key] if cache_key && @snapshot_cache&.key?(cache_key) }
 
-        result = SchemaSnapshot::Builder.new(selected, limits: limits).build
+        result = SchemaSnapshot::Builder.new(selected, limits: limits, registered_entries: entries).build
         mutex.synchronize { (@snapshot_cache ||= {})[cache_key] = result } if cache_key
         result
       end

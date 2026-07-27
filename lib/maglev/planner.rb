@@ -10,9 +10,9 @@ module Maglev
   class Planner
     QUERY_IR_SCHEMA = {
       type: "object", additionalProperties: false,
-      required: %w[version root operation scopes filters joins sort distinct limit],
+      required: %w[version root operation scopes filters joins sort distinct limit group_by],
       properties: {
-        version: {const: 1}, root: {type: "string"}, operation: {enum: %w[records aggregate]},
+        version: {const: 2}, root: {type: "string"}, operation: {enum: %w[records aggregate]},
         scopes: {type: "array", items: {type: "object", additionalProperties: false,
                                         required: %w[name parameters], properties: {name: {type: "string"}, parameters: {type: "object"}}}},
         filters: {type: "array", items: {type: "object", additionalProperties: false,
@@ -21,17 +21,22 @@ module Maglev
         sort: {type: "array", items: {type: "object", additionalProperties: false,
                                       required: %w[field direction], properties: {field: {type: "string"}, direction: {enum: %w[asc desc]}}}},
         distinct: {type: "boolean"}, limit: {type: "integer", minimum: 1},
-        aggregate: {type: ["object", "null"]}
+        aggregate: {type: ["object", "null"]},
+        group_by: {type: "array", items: {type: "object", additionalProperties: false,
+                                          required: %w[field label],
+                                          properties: {field: {type: "string"}, label: {type: "string"},
+                                                       bucket: {enum: %w[hour day week month quarter year]}}}}
       }
     }.freeze
     OUTCOMES = %w[ready clarification_required unsupported].freeze
 
-    Plan = Struct.new(:status, :route, :ir, :resource, :explanation, :warnings, :errors,
+    Plan = Struct.new(:status, :route, :ir, :retrieval, :resource, :explanation, :warnings, :errors,
       :clarification, :constraints, :trace_id, :validation, :base_relation,
       :evidence_requirements, :policy_limits) do
       def initialize(**attributes)
         attributes[:status] = attributes.fetch(:status).to_sym
         attributes[:route] = (attributes[:route] || :structured).to_sym
+        attributes[:retrieval] = attributes[:retrieval]&.freeze
         attributes[:warnings] = Array(attributes[:warnings]).freeze
         attributes[:errors] = Array(attributes[:errors]).freeze
         attributes[:constraints] = (attributes[:constraints] || {}).freeze
@@ -53,16 +58,19 @@ module Maglev
       @adapter = adapter
     end
 
-    def plan(question:, snapshot:, resource:, constraints: {}, base_relation: nil)
+    def plan(question:, snapshot:, resource:, constraints: {}, planning_facts: {}, base_relation: nil)
       root = resource.to_s
       trace_id = SecureRandom.uuid
       request_constraints = normalize_constraints(constraints)
       output = Trace.instrument(:planning, trace_id: trace_id, resource: root) do |payload|
-        provider_plan(question, snapshot, request_constraints, nil).tap do |result|
+        provider_plan(question, snapshot, request_constraints, planning_facts, nil).tap do |result|
           payload[:status] = result.is_a?(Hash) ? result["status"]&.to_sym || :invalid : :invalid
         end
       end
       return outcome_plan(output, root, request_constraints, trace_id) unless output.is_a?(Hash) && output["status"] == "ready"
+      if output["route"] == "knowledge"
+        return knowledge_plan(output, snapshot, root, request_constraints, trace_id, base_relation)
+      end
 
       validation = Trace.instrument(:validation, trace_id: trace_id, resource: root,
         operation: output.dig("ir", "operation")) do |payload|
@@ -74,7 +82,7 @@ module Maglev
       unless validation.valid?
         repair = {errors: safe_errors(validation.errors)}.freeze
         output = Trace.instrument(:planning, trace_id: trace_id, resource: root) do |payload|
-          provider_plan(question, snapshot, request_constraints, repair).tap do |result|
+          provider_plan(question, snapshot, request_constraints, planning_facts, repair).tap do |result|
             payload[:status] = result.is_a?(Hash) ? result["status"]&.to_sym || :invalid : :invalid
           end
         end
@@ -90,7 +98,8 @@ module Maglev
 
       return invalid_plan(root, request_constraints, validation.errors, trace_id) unless validation.valid?
 
-      evidence_requirements = {kind: validation.ir.operation, max_rows: validation.ir.limit}.freeze
+      evidence_requirements = {kind: validation.ir.operation, max_rows: validation.ir.limit,
+                               max_groups: validator_limits(snapshot, root, request_constraints)[:groups]}.freeze
       Plan.new(status: :ready, ir: validation.ir, resource: root, explanation: validation.explanation,
         validation: validation, constraints: request_constraints, trace_id: trace_id,
         base_relation: base_relation, evidence_requirements: evidence_requirements,
@@ -99,9 +108,9 @@ module Maglev
 
     private
 
-    def provider_plan(question, snapshot, constraints, repair)
+    def provider_plan(question, snapshot, constraints, planning_facts, repair)
       @adapter.plan(question: question.to_s, schema_snapshot: snapshot, constraints: constraints,
-        query_ir_schema: QUERY_IR_SCHEMA, repair: repair)
+        planning_facts: planning_facts, query_ir_schema: QUERY_IR_SCHEMA, repair: repair)
     end
 
     def validate(input, snapshot, root, constraints)
@@ -123,6 +132,30 @@ module Maglev
 
     def safe_errors(errors)
       errors.map { |error| {code: error.code, message: error.message, path: error.path}.freeze }.freeze
+    end
+
+    def knowledge_plan(output, snapshot, root, constraints, trace_id, base_relation)
+      entry = Registry.fetch(root)
+      retrieval = output["retrieval"]
+      return invalid_plan(root, constraints, [], trace_id) unless entry&.knowledge
+      return invalid_plan(root, constraints, [], trace_id) unless valid_retrieval?(retrieval)
+
+      options = retrieval.transform_keys(&:to_sym).freeze
+      Plan.new(status: :ready, route: :knowledge, retrieval: options, resource: root,
+        constraints: constraints, trace_id: trace_id, base_relation: base_relation,
+        evidence_requirements: {kind: :semantic_matches, max_sources: options.fetch(:limit)}.freeze)
+    end
+
+    def valid_retrieval?(retrieval)
+      return false unless retrieval.is_a?(Hash)
+      return false unless retrieval.keys.sort == %w[chunks_per_owner limit minimum_similarity]
+
+      limit = retrieval["limit"]
+      chunks = retrieval["chunks_per_owner"]
+      threshold = retrieval["minimum_similarity"]
+      limit.is_a?(Integer) && limit.between?(1, 100) &&
+        chunks.is_a?(Integer) && chunks.between?(1, 10) &&
+        (threshold.nil? || (threshold.is_a?(Numeric) && threshold.finite? && (0.0..1.0).cover?(threshold)))
     end
 
     def outcome_plan(output, root, constraints, trace_id)

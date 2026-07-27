@@ -53,6 +53,33 @@ RSpec.describe Maglev::Adapters::FaradayPlanner do
     end.to raise_error(Maglev::PermanentProviderError, /invalid structured output/)
   end
 
+  it "requests a fixed Business Question Plan with the bounded DAG schema" do
+    request = nil
+    output = {"version" => 1, "steps" => []}
+    http = connection do |stubs|
+      stubs.post("/v1/chat/completions") do |environment|
+        request = environment.body.is_a?(Hash) ? JSON.parse(JSON.generate(environment.body)) : JSON.parse(environment.body)
+        [200, {"Content-Type" => "application/json"},
+          {choices: [{message: {content: JSON.generate(output)}}]}.to_json]
+      end
+    end
+
+    result = described_class.new(provider: provider, connection: http).business_plan(
+      question: "Compare revenue and feedback",
+      schema_snapshot: snapshot,
+      limits: {steps: 3},
+      plan_schema: Maglev::BusinessQuestionPlanner::PLAN_SCHEMA,
+      planning_facts: {"orders" => {"currency" => "AUD"}}
+    )
+
+    expect(result).to eq(output)
+    expect(request.dig("response_format", "json_schema", "schema")).to eq(
+      JSON.parse(JSON.generate(Maglev::BusinessQuestionPlanner::PLAN_SCHEMA))
+    )
+    prompt = request.fetch("messages").map { |message| message.fetch("content") }.join
+    expect(prompt).to include("fixed", "Compare revenue and feedback", '"steps":3', '"currency":"AUD"')
+  end
+
   it "supports JSON object output for providers without JSON Schema response formats" do
     request = nil
     http = connection do |stubs|

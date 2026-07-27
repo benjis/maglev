@@ -62,7 +62,7 @@ RSpec.describe Maglev::SnapshotBuilder do
     expect(snapshot).not_to include("alert")
   end
 
-  it "isolates attachment extraction failures without removing field content" do
+  it "isolates attachment extraction failures without embedding skipped source markers" do
     extractor = Class.new do
       def extract(_blob, source_name:)
         raise "broken #{source_name}"
@@ -73,10 +73,46 @@ RSpec.describe Maglev::SnapshotBuilder do
     record.name = "Acme"
     record.contracts = [ContentSnapshotBlob.new("contract.txt", "text/plain", 13, "Renewal risk")]
 
-    snapshot = described_class.new(record, ContentSnapshotRecord.maglev_config, attachment_extractor: extractor).build.to_s
+    snapshot = described_class.new(record, ContentSnapshotRecord.maglev_config, attachment_extractor: extractor).build
 
-    expect(snapshot).to include("name: Acme")
-    expect(snapshot).to include("contracts[blob:contract.txt].skipped: extraction_failed")
+    expect(snapshot.to_s).to include("name: Acme")
+    expect(snapshot.to_s).not_to include("contracts[blob:contract.txt]")
+    expect(snapshot.metadata[:diagnostics]).to include(
+      source: "contracts[blob:contract.txt]",
+      role: :attachment,
+      reason: :extraction_failed
+    )
+  end
+
+  it "orders attachment sources deterministically by their stable identifiers" do
+    record = ContentSnapshotRecord.new
+    record.id = 5
+    record.name = "Acme"
+    record.contracts = [
+      ContentSnapshotBlob.new("z-last.txt", "text/plain", 4, "Last"),
+      ContentSnapshotBlob.new("a-first.txt", "text/plain", 5, "First")
+    ]
+
+    snapshot = described_class.new(record, ContentSnapshotRecord.maglev_config).build.to_s
+
+    expect(snapshot.index("contracts[blob:a-first.txt]")).to be < snapshot.index("contracts[blob:z-last.txt]")
+  end
+
+  it "skips unavailable rich text with deterministic diagnostics" do
+    record = ContentSnapshotRecord.new
+    record.id = 5
+    record.name = "Acme"
+    record.contracts = []
+    def record.notes = raise("not authorized")
+
+    snapshot = described_class.new(record, ContentSnapshotRecord.maglev_config).build
+
+    expect(snapshot.to_s).to eq("ContentSnapshotRecord#5\nname: Acme")
+    expect(snapshot.metadata[:diagnostics]).to include(
+      source: "rich_text.notes",
+      role: :rich_text,
+      reason: :unavailable
+    )
   end
 
   it "truncates attachment and rich-text sources through the builder with stable metadata paths" do

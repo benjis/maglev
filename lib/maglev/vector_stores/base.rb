@@ -3,7 +3,7 @@
 module Maglev
   module VectorStores
     class Base
-      CONTRACT_VERSION = 2
+      CONTRACT_VERSION = 3
 
       def contract_version = CONTRACT_VERSION
 
@@ -15,7 +15,7 @@ module Maglev
         raise NotImplementedError, "#{self.class.name} must implement #upsert"
       end
 
-      def replace_owner(owner_type:, owner_id:, documents:)
+      def replace_owner(owner_type:, owner_id:, documents:, generation: nil)
         raise NotImplementedError, "#{self.class.name} must implement #replace_owner"
       end
 

@@ -1,14 +1,20 @@
 # frozen_string_literal: true
 
 require "cgi"
+require "date"
 
 require_relative "attachment_extractor"
 require_relative "relation_order"
+require_relative "registry"
+require_relative "schema_compiler"
 require_relative "snapshot"
 require_relative "snapshot_budget"
 
 module Maglev
   class SnapshotBuilder
+    UNAVAILABLE = Object.new.freeze
+    private_constant :UNAVAILABLE
+
     def initialize(record, config, path: nil, visited: nil, attachment_extractor: nil, remaining_depth: Maglev.configuration.max_relation_depth, budget: nil)
       @record = record
       @config = config
@@ -23,10 +29,17 @@ module Maglev
       return Snapshot.new([]) if visited?
 
       mark_visited
+      @diagnostics = []
+      @related_context = {}
       raw_lines = lines
       text = raw_lines.join("\n")
       text = @budget.truncate(text, kind: :whole_snapshot, path: "snapshot") unless @path
-      Snapshot.new(text.lines(chomp: true), metadata: @budget.metadata)
+      metadata = @budget.metadata.merge(
+        attribution: {owner_type: @record.class.name, owner_id: record_id},
+        knowledge_context: context_values.merge(@related_context).freeze,
+        diagnostics: @diagnostics.freeze
+      )
+      Snapshot.new(text.lines(chomp: true), metadata: metadata)
     end
 
     private
@@ -35,7 +48,6 @@ module Maglev
       [
         header,
         *attribute_lines,
-        *tag_lines,
         *attachment_lines,
         *rich_text_lines,
         *relation_lines
@@ -53,28 +65,70 @@ module Maglev
     end
 
     def attribute_lines
-      @config.exposed_attributes.filter_map do |attribute|
-        value = @record.public_send(attribute)
-        next if value.nil?
+      @config.content_attributes.filter_map do |attribute|
+        value = knowledge_value(attribute, :content)
+        next if value.equal?(UNAVAILABLE)
+        next diagnose(attribute, :content, :empty) if empty_value?(value)
+        next diagnose(attribute, :content, :unsupported) unless supported_value?(value)
 
         text = @budget.truncate(value, kind: :attribute, path: attribute_path(attribute))
         "#{attribute_path(attribute)}: #{text}"
       end
     end
 
-    def tag_lines
-      return [] if @config.tags.empty?
+    def context_values
+      values = @config.context_attributes.each_with_object({}) do |attribute, context|
+        value = knowledge_value(attribute, :context)
+        next if value.equal?(UNAVAILABLE)
+        next diagnose(attribute, :context, :empty) if empty_value?(value)
+        next diagnose(attribute, :context, :unsupported) unless supported_value?(value)
 
-      ["tags: #{@config.tags.join(", ")}"]
+        path = attribute_path(attribute)
+        context[path] = value.is_a?(String) ? @budget.truncate(value, kind: :attribute, path: path) : value
+      end
+      tag_path = @path ? "#{@path}.tags" : "tags"
+      values[tag_path] = @config.tags unless @config.tags.empty?
+      values.freeze
+    end
+
+    def empty_value?(value)
+      value.nil? || (value.respond_to?(:empty?) && value.empty?)
+    end
+
+    def knowledge_value(attribute, role)
+      @record.public_send(attribute)
+    rescue
+      diagnose(attribute, role, :unavailable)
+      UNAVAILABLE
+    end
+
+    def supported_value?(value)
+      value.is_a?(String) || value.is_a?(Numeric) || value == true || value == false ||
+        value.is_a?(Date) || value.is_a?(Time) || value.is_a?(DateTime)
+    end
+
+    def diagnose(field, role, reason)
+      @diagnostics << {field: attribute_path(field), role: role, reason: reason}.freeze
+      nil
     end
 
     def relation_lines
       return [] unless @remaining_depth.positive?
 
       @config.relations.flat_map do |relation|
+        unless registered_association_available?(relation)
+          diagnose_source(relation.name, :related, :association_unavailable)
+          next []
+        end
+
         remaining_depth = [@remaining_depth, relation.depth].min - 1
         relation_records, collection = relation_records(relation)
         relation_records.each_with_index.flat_map do |related_record, index|
+          unless related_record.class.respond_to?(:maglev_config) && related_record.class.maglev_config
+            diagnose_source(path_for(relation, index, collection: collection), :related, :knowledge_unavailable)
+            next []
+          end
+
           relation_path = path_for(relation, index, collection: collection)
           child = SnapshotBuilder.new(
             related_record,
@@ -84,24 +138,33 @@ module Maglev
             attachment_extractor: @attachment_extractor,
             remaining_depth: remaining_depth,
             budget: @budget
-          ).build.to_s
-          @budget.truncate(child, kind: :related_record, path: relation_path).split("\n")
+          ).build
+          @related_context.merge!(child.metadata.fetch(:knowledge_context, {}))
+          @diagnostics.concat(child.metadata.fetch(:diagnostics, []))
+          @budget.truncate(child.to_s, kind: :related_record, path: relation_path).split("\n")
         end
+      rescue
+        diagnose_source(relation.name, :related, :unavailable)
+        []
       end
     end
 
     def attachment_lines
       @config.attached_sources.flat_map do |source|
-        attachment_blobs(source.name).flat_map do |blob|
+        attachment_blobs(source.name).sort_by { |blob| blob_identifier(blob).to_s }.flat_map do |blob|
           document = extract_attachment(source.name, blob)
           if document.extracted?
             path = document.source_identifier
             text = @budget.truncate(document.text, kind: :attachment, path: path)
             ["#{path}.text: #{text}"]
           else
-            ["#{document.source_identifier}.skipped: #{document.metadata[:reason]}"]
+            diagnose_source(document.source_identifier, :attachment, document.metadata[:reason].to_sym)
+            []
           end
         end
+      rescue
+        diagnose_source(source.name, :attachment, :unavailable)
+        []
       end
     end
 
@@ -141,7 +204,39 @@ module Maglev
         path = rich_text_identifier(source.name)
         text = @budget.truncate(text, kind: :rich_text, path: path) unless text.nil?
         "#{path}.text: #{text}" unless text.nil? || text.empty?
+      rescue
+        diagnose_source(rich_text_identifier(source.name), :rich_text, :unavailable)
+        nil
       end
+    end
+
+    def diagnose_source(source, role, reason)
+      @diagnostics << {source: source.to_s, role: role, reason: reason}.freeze
+      nil
+    end
+
+    def registered_association_available?(relation)
+      return true unless active_record_record?
+
+      entry = Registry.entries.find { |candidate| candidate.model_class == @record.class }
+      declaration = entry&.queryable&.associations&.find { |association| association.name == relation.name }
+      return false unless declaration
+
+      compiled = SchemaCompiler.new(@config).compile.relations.find { |candidate| candidate.name == relation.name }
+      return false unless compiled
+
+      target = if declaration.resource
+        Registry.fetch(declaration.resource)
+      else
+        Registry.entries.find { |candidate| candidate.model_class == compiled.related_class }
+      end
+      target&.knowledge && target.model_class.base_class == compiled.related_class.base_class
+    rescue ConfigurationError, NameError
+      false
+    end
+
+    def active_record_record?
+      defined?(ActiveRecord::Base) && @record.is_a?(ActiveRecord::Base)
     end
 
     def rich_text_value(source_name)

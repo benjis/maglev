@@ -2,7 +2,6 @@
 
 require "active_support/concern"
 
-require_relative "answerer"
 require_relative "chunker"
 require_relative "content_source_graph"
 require_relative "context_preview"
@@ -13,7 +12,6 @@ require_relative "registry"
 require_relative "indexer"
 require_relative "reindex_job"
 require_relative "retriever"
-require_relative "request_executor"
 require_relative "schema_compiler"
 require_relative "snapshot_builder"
 require_relative "snapshot"
@@ -23,8 +21,8 @@ module Maglev
     extend ActiveSupport::Concern
 
     class_methods do
-      def maglev_resource(identifier, &block)
-        @maglev_resource_identifier = identifier.to_s
+      def maglev_resource(identifier = nil, &block)
+        @maglev_resource_identifier = identifier ? identifier.to_s : inferred_maglev_resource_identifier
         @maglev_resource_declaration = block
         KnowledgeRegistry.register(name)
         rebuild_maglev_resource_registration
@@ -67,6 +65,11 @@ module Maglev
         end
       end
 
+      def maglev_resource_identifier
+        @maglev_resource_identifier ||
+          (superclass.maglev_resource_identifier if superclass.respond_to?(:maglev_resource_identifier))
+      end
+
       def search(query, limit: 10, user: nil, minimum_similarity: nil)
         maglev_knowledge_config!
         Retriever.new(self).search(query, limit: limit, user: user, minimum_similarity: minimum_similarity)
@@ -97,23 +100,44 @@ module Maglev
         end
         {
           model: name,
-          exposed_attributes: config&.exposed_attributes || [].freeze,
+          content_attributes: config&.content_attributes || [].freeze,
+          context_attributes: config&.context_attributes || [].freeze,
+          prohibited_attributes: config&.prohibited_attributes || [].freeze,
+          exposed_attributes: config&.content_attributes || [].freeze,
           relations: relations,
           attached_sources: (config&.attached_sources&.map(&:name) || []).freeze,
           rich_text_sources: (config&.rich_text_sources&.map(&:name) || []).freeze
         }.freeze
       end
 
-      def ask(question, limit: 10, user: nil, minimum_similarity: nil, chunks_per_owner: nil)
-        maglev_knowledge_config!
-        Answerer.new(self).ask(question, limit: limit, user: user, minimum_similarity: minimum_similarity, chunks_per_owner: chunks_per_owner)
+      def ask(question, user: RemovedInterface::MISSING, context: RemovedInterface::MISSING,
+        continuation: nil, **options)
+        if user.equal?(RemovedInterface::MISSING) || context.equal?(RemovedInterface::MISSING) || options.any?
+          RemovedInterface.raise!(:model_ask)
+        end
+
+        Maglev.ask(question, user: user, context: context, continuation: continuation)
       end
 
-      def maglev_request(question, **options)
-        Maglev.request(question, models: [self], **options)
+      def method_missing(name, ...)
+        RemovedInterface.raise!(:maglev_request) if name == :maglev_request
+        super
+      end
+
+      def respond_to_missing?(name, include_private = false)
+        super
       end
 
       private
+
+      def inferred_maglev_resource_identifier
+        unless name && !name.empty?
+          raise ConfigurationError,
+            "Maglev cannot infer a resource identifier for an anonymous model; pass an explicit identifier"
+        end
+
+        model_name.route_key
+      end
 
       def maglev_knowledge_config!
         maglev_config || raise(ConfigurationError, "#{name} must declare maglev_resource knowledge")
@@ -176,22 +200,22 @@ module Maglev
       Snapshot.new([snapshot.to_s], metadata: metadata)
     end
 
-    def ask(question, limit: 10, user: nil, minimum_similarity: nil, chunks_per_owner: nil)
-      maglev_knowledge_config!
-      Answerer.new(self.class).ask(question, limit: limit, owner: self, user: user,
-        minimum_similarity: minimum_similarity, chunks_per_owner: chunks_per_owner)
-    end
-
-    def explain(limit: 10)
-      ask(Maglev.configuration.explain_question, limit: limit)
-    end
-
     def maglev_context_preview(question: nil)
       snapshot = maglev_snapshot_result
       ContextPreview.new(
         text: snapshot.to_s,
         metadata: snapshot.metadata.merge(question: question, provider_calls: 0)
       )
+    end
+
+    def method_missing(name, ...)
+      RemovedInterface.raise!(:record_ask) if %i[ask explain].include?(name)
+      RemovedInterface.raise!(:maglev_request) if name == :maglev_request
+      super
+    end
+
+    def respond_to_missing?(name, include_private = false)
+      super
     end
 
     private
@@ -210,8 +234,13 @@ module Maglev
   end
 
   module RelationExtension
-    def maglev_request(question, **options)
-      Maglev.request(question, models: [klass], base_relation: self, **options)
+    def method_missing(name, ...)
+      RemovedInterface.raise!(:maglev_request) if name == :maglev_request
+      super
+    end
+
+    def respond_to_missing?(name, include_private = false)
+      super
     end
   end
 end

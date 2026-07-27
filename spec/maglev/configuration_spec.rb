@@ -106,4 +106,15 @@ RSpec.describe Maglev do
     expect(configuration.retrieval_max_candidates).to eq(1_000)
     expect { configuration.retrieval_max_candidates = 0 }.to raise_error(ArgumentError, /positive Integer/)
   end
+
+  it "provides positive hard limits for Business Question Plan work" do
+    configuration = Maglev::Configuration.new
+
+    expect(configuration.business_plan_max_steps).to eq(12)
+    expect(configuration.business_plan_max_depth).to eq(4)
+    expect(configuration.business_plan_max_retrieval_size).to eq(100)
+    expect(configuration.business_plan_max_structured_result_size).to eq(500)
+    expect(configuration.business_plan_max_total_work).to eq(1_000)
+    expect { configuration.business_plan_max_steps = 0 }.to raise_error(ArgumentError, /positive Integer/)
+  end
 end

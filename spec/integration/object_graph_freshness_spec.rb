@@ -137,6 +137,29 @@ RSpec.describe "Object graph knowledge freshness" do
     end.not_to have_enqueued_job(Maglev::ReindexJob).with("GraphFreshnessCustomer", customer.id)
   end
 
+  it "does not include a knowledge relation blocked by registered association policy" do
+    GraphFreshnessCustomer.maglev_resource(:graph_freshness_customers) do
+      queryable do
+        prohibit_association :tickets
+      end
+      knowledge do
+        expose :name
+        include_related :tickets, depth: 1, limit: 2
+      end
+    end
+    customer = GraphFreshnessCustomer.create!(name: "Acme")
+    GraphFreshnessTicket.create!(customer: customer, subject: "Must remain private")
+
+    snapshot = customer.maglev_snapshot_result
+
+    expect(snapshot.to_s).not_to include("Must remain private")
+    expect(snapshot.metadata[:diagnostics]).to include(
+      source: "tickets",
+      role: :related,
+      reason: :association_unavailable
+    )
+  end
+
   it "does not register duplicate reverse callbacks across repeated declarations" do
     callback_count = GraphFreshnessTicket._commit_callbacks.count { |callback| callback.filter == :maglev_reindex_dependents }
 
@@ -161,8 +184,11 @@ RSpec.describe "Object graph knowledge freshness" do
     perform_enqueued_jobs
 
     search_result = GraphFreshnessCustomer.search("risk", limit: 1).first
-    answer = GraphFreshnessCustomer.ask("Which customer is at risk?", limit: 1, chunks_per_owner: 4)
-    instance_answer = customer.ask("Why is this customer at risk?", limit: 1, chunks_per_owner: 4)
+    answerer = Maglev::Answerer.new(GraphFreshnessCustomer)
+    answer = answerer.ask("Which customer is at risk?", limit: 1, chunks_per_owner: 4)
+    instance_answer = answerer.ask(
+      "Why is this customer at risk?", limit: 1, owner: customer, chunks_per_owner: 4
+    )
 
     expect(search_result.content).to include("tickets[0].subject: Escalated churn risk")
     expect(answer.sources.first[:content]).to include("tickets[0].subject: Escalated churn risk")

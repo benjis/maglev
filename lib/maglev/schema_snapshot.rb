@@ -7,6 +7,7 @@ require_relative "errors"
 module Maglev
   class SchemaSnapshot
     DEFAULT_LIMITS = {resources: 12, fields: 40, associations: 20, bytes: 32_768}.freeze
+    SUPPORTED_ASSOCIATION_MACROS = %i[belongs_to has_one has_many has_and_belongs_to_many].freeze
 
     Field = Struct.new(:name, :type, :null, :enum_values, :description, :synonyms) do
       def initialize(**attributes)
@@ -21,7 +22,7 @@ module Maglev
       end
     end
 
-    Association = Struct.new(:name, :resource, :macro, :polymorphic, :description, :synonyms) do
+    Association = Struct.new(:name, :resource, :macro, :cardinality, :polymorphic, :description, :synonyms) do
       def initialize(**attributes)
         attributes[:synonyms] = Array(attributes[:synonyms]).freeze
         super
@@ -29,18 +30,22 @@ module Maglev
       end
 
       def to_h
-        {name: name, resource: resource, macro: macro, polymorphic: polymorphic, description: description, synonyms: synonyms}.freeze
+        {name: name, resource: resource, macro: macro, cardinality: cardinality, polymorphic: polymorphic,
+         description: description, synonyms: synonyms}.freeze
       end
     end
 
     Resource = Struct.new(:identifier, :description, :synonyms, :table_name, :primary_key, :sti_base, :inheritance_column,
-      :fields, :associations, :scopes, :aggregates, :limits, :allow_unscoped_model_queries) do
+      :fields, :analytical_fields, :associations, :scopes, :aggregates, :grouping, :limits,
+      :allow_unscoped_model_queries) do
       def initialize(**attributes)
         attributes[:synonyms] = Array(attributes[:synonyms]).freeze
         attributes[:fields] = attributes.fetch(:fields).freeze
+        attributes[:analytical_fields] = Array(attributes[:analytical_fields]).freeze
         attributes[:associations] = attributes.fetch(:associations).freeze
         attributes[:scopes] = attributes.fetch(:scopes).freeze
         attributes[:aggregates] = attributes.fetch(:aggregates).freeze
+        attributes[:grouping] = Array(attributes[:grouping]).freeze
         attributes[:limits] = attributes.fetch(:limits).freeze
         super
         freeze
@@ -50,8 +55,10 @@ module Maglev
         {
           identifier: identifier, description: description, synonyms: synonyms, table_name: table_name,
           primary_key: primary_key, sti_base: sti_base, inheritance_column: inheritance_column,
-          fields: fields.map(&:to_h).freeze, associations: associations.map(&:to_h).freeze,
-          scopes: scopes, aggregates: aggregates, limits: limits,
+          fields: fields.map(&:to_h).freeze,
+          analytical_fields: analytical_fields.map(&:to_h).freeze,
+          associations: associations.map(&:to_h).freeze,
+          scopes: scopes, aggregates: aggregates, grouping: grouping, limits: limits,
           allow_unscoped_model_queries: allow_unscoped_model_queries
         }.freeze
       end
@@ -80,7 +87,7 @@ module Maglev
     end
 
     class Builder
-      def initialize(entries, limits: {})
+      def initialize(entries, limits: {}, registered_entries: entries)
         requested = limits.transform_keys(&:to_sym)
         unknown = requested.keys - DEFAULT_LIMITS.keys
         valid = requested.all? do |key, value|
@@ -91,7 +98,7 @@ module Maglev
         @limits = DEFAULT_LIMITS.merge(requested) { |_key, global, request| [global, request].min }.freeze
         @entries = entries.sort_by(&:identifier).first(@limits.fetch(:resources)).freeze
         @entry_by_identifier = @entries.to_h { |entry| [entry.identifier, entry] }.freeze
-        @resource_identifiers = @entries.map(&:identifier).to_h { |identifier| [identifier, true] }.freeze
+        @registered_entry_by_identifier = registered_entries.to_h { |entry| [entry.identifier, entry] }.freeze
         @resource_for_model = @entries.to_h { |entry| [entry.model_class.name, entry.identifier] }.freeze
       end
 
@@ -114,26 +121,46 @@ module Maglev
         model = entry.model_class
         queryable = entry.queryable
         fields = queryable.fields.reject(&:sensitive).sort_by(&:name).first(@limits.fetch(:fields)).map do |declaration|
-          column = model.columns_hash.fetch(declaration.name)
-          enum_values = declaration.enum_values.empty? ? model.defined_enums.fetch(declaration.name, {}).keys.sort : declaration.enum_values
-          Field.new(name: declaration.name, type: column.type, null: column.null, enum_values: enum_values,
+          Field.new(name: declaration.name, type: declaration.type, null: declaration.null, enum_values: declaration.enum_values,
             description: declaration.description, synonyms: declaration.synonyms)
         end
-        associations = queryable.associations.select { |declaration| @resource_identifiers.key?(declaration.resource) }
-          .sort_by(&:name).first(@limits.fetch(:associations)).map do |declaration|
+        analytical_names = [
+          *queryable.grouping,
+          *queryable.aggregates.values.reject { |value| value == true }.flatten
+        ].uniq - fields.map(&:name)
+        analytical_fields = analytical_names.sort.first(@limits.fetch(:fields)).filter_map do |name|
+          declaration = queryable.fields.find { |field| field.name == name }
+          column = model.columns_hash[name]
+          next unless column
+
+          Field.new(name: name, type: column.type, null: column.null,
+            enum_values: model.defined_enums.fetch(name, {}).keys.sort,
+            description: declaration&.description, synonyms: declaration&.synonyms)
+        end
+        associations = queryable.associations.filter_map do |declaration|
           reflection = model.reflect_on_association(declaration.name.to_sym)
-          target = @entry_by_identifier.fetch(declaration.resource)
+          unless reflection && SUPPORTED_ASSOCIATION_MACROS.include?(reflection.macro)
+            macro = reflection&.macro || :unresolved
+            raise ConfigurationError,
+              "Unsupported association #{model.name}.#{declaration.name} (#{macro})"
+          end
+          target = target_entry_for(model, reflection, declaration)
+          next unless target
+
           unless reflection.polymorphic? || reflection.klass.base_class == target.model_class.base_class
             raise ConfigurationError,
-              "Association #{model.name}.#{declaration.name} does not match resource #{declaration.resource}"
+              "Association #{model.name}.#{declaration.name} does not match resource #{target.identifier}"
           end
-          Association.new(name: declaration.name, resource: declaration.resource, macro: reflection.macro,
+          Association.new(name: declaration.name, resource: target.identifier, macro: reflection.macro,
+            cardinality: association_cardinality(reflection),
             polymorphic: !!reflection.polymorphic?, description: declaration.description, synonyms: declaration.synonyms)
-        end
+        end.sort_by(&:name).first(@limits.fetch(:associations))
         Resource.new(identifier: entry.identifier, description: entry.description, synonyms: entry.synonyms,
           table_name: model.table_name, primary_key: model.primary_key, sti_base: @resource_for_model[model.base_class.name],
-          inheritance_column: model.inheritance_column, fields: fields, associations: associations,
+          inheritance_column: model.inheritance_column, fields: fields, analytical_fields: analytical_fields,
+          associations: associations,
           scopes: queryable.scopes.map { |scope| scope_to_h(scope) }.freeze, aggregates: queryable.aggregates,
+          grouping: queryable.grouping,
           limits: queryable.limits, allow_unscoped_model_queries: queryable.allow_unscoped_model_queries)
       end
 
@@ -142,6 +169,31 @@ module Maglev
           {type: parameter.type, required: parameter.required, nullable: parameter.nullable,
            enum_values: parameter.enum_values, minimum: parameter.minimum, maximum: parameter.maximum}.freeze
         end.freeze}.freeze
+      end
+
+      def target_entry_for(model, reflection, declaration)
+        if declaration.resource
+          unless @registered_entry_by_identifier.key?(declaration.resource)
+            raise ConfigurationError,
+              "Association #{model.name}.#{declaration.name} references unregistered resource #{declaration.resource}"
+          end
+
+          return @entry_by_identifier[declaration.resource]
+        end
+        if reflection.polymorphic?
+          raise ConfigurationError,
+            "Polymorphic association #{model.name}.#{declaration.name} requires an explicit target resource"
+        end
+
+        target_class = reflection.klass
+        @entries.find { |entry| entry.model_class == target_class }
+      rescue NameError => error
+        raise ConfigurationError,
+          "Cannot resolve association #{model.name}.#{declaration.name}: #{error.message}"
+      end
+
+      def association_cardinality(reflection)
+        reflection.collection? ? :many : :one
       end
 
       def paths_for(resources)

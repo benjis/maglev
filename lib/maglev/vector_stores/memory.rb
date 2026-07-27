@@ -29,9 +29,12 @@ module Maglev
         end
       end
 
-      def replace_owner(owner_type:, owner_id:, documents:)
+      def replace_owner(owner_type:, owner_id:, documents:, generation: nil)
         staged = stage(documents)
-        unless staged.all? { |_id, entry| entry.owner_type == owner_type && entry.owner_id == owner_id }
+        unless staged.all? do |_id, entry|
+          entry.owner_type == owner_type && entry.owner_id == owner_id &&
+              entry.document.generation == generation
+        end
           raise ArgumentError, "replacement documents must match the requested owner"
         end
 
@@ -43,7 +46,8 @@ module Maglev
           raise ArgumentError, "replacement document id belongs to another owner" if conflict
 
           replacement = @documents.reject do |_id, entry|
-            entry.owner_type == owner_type && entry.owner_id == owner_id
+            entry.owner_type == owner_type && entry.owner_id == owner_id &&
+              entry.document.generation == generation
           end
           staged.each { |id, entry| replacement[id] = entry }
           @documents = replacement
@@ -123,8 +127,13 @@ module Maglev
           source_identity: document.source_identity,
           source_type: document.source_type,
           tenant_id: document.tenant_id,
+          resource_identifier: document.resource_identifier,
+          representation_version: document.representation_version,
+          knowledge_policy_digest: document.knowledge_policy_digest,
+          generation: document.generation,
           chunk_index: document.chunk_index,
           content: document.content,
+          context: document.context,
           content_checksum: document.content_checksum,
           embedding_model: document.embedding_model,
           index_version: document.index_version,

@@ -2,14 +2,15 @@
 
 module Maglev
   class RetrievalResult
-    attr_reader :query, :considered, :selected, :rejected, :context, :budgets, :reasons, :timings, :trace_id
+    attr_reader :query, :considered, :selected, :rejected, :context, :sources, :budgets, :reasons, :timings, :trace_id
 
-    def initialize(query:, considered:, selected:, rejected:, context:, budgets:, reasons:, timings:, trace_id:)
+    def initialize(query:, considered:, selected:, rejected:, context:, budgets:, reasons:, timings:, trace_id:, sources: [])
       @query = query.to_s.freeze
       @considered = considered.freeze
       @selected = selected.freeze
       @rejected = rejected.map { |item| item.freeze }.freeze
       @context = context.to_s.freeze
+      @sources = sources.freeze
       @budgets = budgets.freeze
       @reasons = reasons.freeze
       @timings = timings.freeze

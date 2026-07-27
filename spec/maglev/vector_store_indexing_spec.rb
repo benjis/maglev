@@ -8,27 +8,33 @@ require "maglev/snapshot_builder"
 require "maglev/vector_stores/memory"
 
 class VectorStoreIndexedRecord
-  attr_accessor :id, :name
+  attr_accessor :id, :name, :industry
 
   def self.name = "VectorStoreIndexedRecord"
 
   def self.maglev_config
     @maglev_config ||= Maglev::KnowledgeConfig.build(self) do
-      expose :name
+      content :name
+      context :industry
     end
   end
 
   def self.attribute_names
-    %w[id name]
+    %w[id name industry]
   end
 
-  def initialize(id:, name:)
+  def initialize(id:, name:, industry: "Retail")
     @id = id
     @name = name
+    @industry = industry
   end
 
   def maglev_snapshot
     Maglev::SnapshotBuilder.new(self, self.class.maglev_config).build.to_s
+  end
+
+  def maglev_snapshot_result
+    Maglev::SnapshotBuilder.new(self, self.class.maglev_config).build
   end
 end
 
@@ -43,8 +49,8 @@ class VectorStoreEmbeddingAdapter
 
   def maglev_adapter_id = "test.vector_store_embedding"
 
-  def embed(_text)
-    @calls << true
+  def embed(text)
+    @calls << text
     [1.0, 0.0]
   end
 end
@@ -100,10 +106,11 @@ RSpec.describe "Vector store backed indexing and retrieval" do
     store = Maglev::VectorStores::Memory.new
     record = VectorStoreIndexedRecord.new(id: 7, name: "Acme")
 
+    adapter = VectorStoreEmbeddingAdapter.new
     Maglev::Indexer.new(
       record,
       vector_store: store,
-      embedding_adapter: VectorStoreEmbeddingAdapter.new,
+      embedding_adapter: adapter,
       embedding_dimensions: 2
     ).index
 
@@ -116,7 +123,9 @@ RSpec.describe "Vector store backed indexing and retrieval" do
 
     expect(results.first.owner).to be(record)
     expect(results.first.content).to include("name: Acme")
-    expect(results.first.source).to eq("snapshot")
+    expect(results.first.context).to eq("industry" => "Retail")
+    expect(results.first.source).to eq("name")
+    expect(adapter.calls.join).not_to include("Retail")
   end
 
   it "reuses custom-store embeddings only for matching content and complete identity" do
@@ -126,9 +135,28 @@ RSpec.describe "Vector store backed indexing and retrieval" do
 
     2.times { index_record(record, store, adapter) }
 
-    document = store.fetch(ids: ["VectorStoreIndexedRecord:7:snapshot:0"]).first
+    document = store.fetch(ids: [document_id(record)]).first
     expect(adapter.calls.size).to eq(1)
     expect(document.index_version).to eq(custom_index_version(adapter))
+    expect(document.representation_version).to eq("maglev-knowledge-v0.3")
+    expect(document.resource_identifier).to eq("VectorStoreIndexedRecord")
+    expect(document.knowledge_policy_digest).to match(/\A[0-9a-f]{64}\z/)
+    expect(document.revision).to eq(document.content_checksum)
+  end
+
+  it "updates context without embedding it or recomputing an unchanged content vector" do
+    store = Maglev::VectorStores::Memory.new
+    record = VectorStoreIndexedRecord.new(id: 7, name: "Acme", industry: "Retail")
+    adapter = VectorStoreEmbeddingAdapter.new
+
+    index_record(record, store, adapter)
+    record.industry = "Wholesale"
+    index_record(record, store, adapter)
+
+    document = store.fetch(ids: [document_id(record)]).first
+    expect(adapter.calls.size).to eq(1)
+    expect(adapter.calls.join).not_to include("Retail", "Wholesale")
+    expect(document.context).to eq("industry" => "Wholesale")
   end
 
   it "fetches and atomically replaces a complete multi-chunk generation once per index" do
@@ -172,7 +200,7 @@ RSpec.describe "Vector store backed indexing and retrieval" do
     index_record(record, store, adapter)
 
     expect(adapter.calls.size).to eq(1)
-    expect(store.fetch(ids: [legacy.id]).first.index_version).to eq(custom_index_version(adapter))
+    expect(store.fetch(ids: [document_id(record)]).first.index_version).to eq(custom_index_version(adapter))
   end
 
   def index_record(record, store, adapter, dimensions: 2, chunk_size: 1000)
@@ -207,8 +235,25 @@ RSpec.describe "Vector store backed indexing and retrieval" do
     configuration = Maglev.configuration
     original_dimensions = configuration.embedding_dimensions
     configuration.embedding_dimensions = 2
-    Maglev::IndexIdentity.new(configuration: configuration, adapter: adapter, chunk_size: 1000).to_s
+    Maglev::IndexIdentity.for(
+      model_class: VectorStoreIndexedRecord,
+      configuration: configuration,
+      adapter: adapter,
+      chunk_size: 1000
+    ).to_s
   ensure
     configuration.embedding_dimensions = original_dimensions
+  end
+
+  def document_id(record)
+    source = Maglev::SourceExtractor.new.call(record.maglev_snapshot).first
+    Maglev::VectorStores::DocumentId.build(
+      resource_identifier: record.class.name,
+      owner_type: record.class.name,
+      owner_id: record.id,
+      source_identity: source.identity,
+      chunk_index: 0,
+      index_version: custom_index_version(VectorStoreEmbeddingAdapter.new)
+    )
   end
 end

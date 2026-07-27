@@ -70,7 +70,7 @@ RSpec.describe "ActiveRecord indexing callbacks" do
     expect(indexer).to have_received(:unindex)
   end
 
-  it "exposes answer-generation APIs on configured models and records" do
+  it "exposes one model-level ask hint without record-level answer aliases" do
     SearchableCustomer.maglev_resource(:searchable_customers) do
       knowledge do
         expose :name
@@ -78,7 +78,6 @@ RSpec.describe "ActiveRecord indexing callbacks" do
     end
 
     expect(SearchableCustomer).to respond_to(:ask)
-    expect(SearchableCustomer.instance_methods).to include(:ask)
-    expect(SearchableCustomer.instance_methods).to include(:explain)
+    expect(SearchableCustomer.instance_methods).not_to include(:ask, :explain)
   end
 end

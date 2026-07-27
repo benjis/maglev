@@ -4,6 +4,7 @@ require_relative "adapters/faraday_embedding"
 require_relative "authorization"
 require_relative "chunk"
 require_relative "index_identity"
+require_relative "index_generation"
 require_relative "provider_call"
 require_relative "retrieval_outcome"
 require_relative "retrieval_result"
@@ -73,7 +74,8 @@ module Maglev
                  selected_count: selected.size, rejected_count: rejected.size, timings: timings}.freeze
       ActiveSupport::Notifications.instrument("maglev.retrieval.complete", payload)
       RetrievalResult.new(query: query, considered: outcome.considered, selected: selected, rejected: rejected,
-        context: context.text, budgets: context.metadata, reasons: reasons, timings: timings, trace_id: trace_id)
+        context: context.text, sources: context.sources, budgets: context.metadata, reasons: reasons,
+        timings: timings, trace_id: trace_id)
     end
 
     def retrieval_outcome(query, limit:, owner: nil, user: nil, minimum_similarity: nil, chunks_per_owner: 1)
@@ -93,6 +95,7 @@ module Maglev
       retrieval_started = monotonic
       candidates = search_results(fetch_candidates(embedding, owner: owner, user: user, limit: bounded_limit))
       candidate_count = candidates.size
+      candidates = candidates.select { |result| candidate_authorized?(result) }
       candidates = authorize_results(candidates, user)
       authorization_rejected_count = candidate_count - candidates.size
       examined = sorted_results(candidates)
@@ -114,6 +117,14 @@ module Maglev
     end
 
     private
+
+    def candidate_authorized?(result)
+      return true unless @candidate_ids
+
+      owner = result.owner
+      owner_id = owner.respond_to?(:id) ? owner.id : owner
+      @candidate_ids.include?(owner_id)
+    end
 
     def validate_candidates!(candidates)
       return unless candidates
@@ -178,7 +189,16 @@ module Maglev
         return @vector_store.search(vector: embedding, filters: filters, limit: limit)
       end
 
-      scope = @chunk_model.where(owner_model_name: @model_class.name, index_version: @current_index_version)
+      conditions = {owner_model_name: @model_class.name, index_version: @current_index_version}
+      conditions[:generation] = @current_generation if generation_column? && @current_generation
+      if index_identity_columns?
+        conditions.merge!(
+          resource_identifier: @current_resource_identifier,
+          representation_version: @current_representation_version,
+          knowledge_policy_digest: @current_knowledge_policy_digest
+        )
+      end
+      scope = @chunk_model.where(conditions)
       scope = scope.where(owner_id: @candidate_ids) if @candidate_ids
       scope = scope.where(owner: owner) if owner
       tenant_id = @request_tenant_id
@@ -215,7 +235,14 @@ module Maglev
     def source_priority(type) = (type.to_sym == :attribute) ? 1 : 0
 
     def filters_for(owner, user:)
-      filters = {owner_model_name: @model_class.name, index_version: @current_index_version}
+      filters = {
+        owner_model_name: @model_class.name,
+        resource_identifier: @current_resource_identifier,
+        representation_version: @current_representation_version,
+        knowledge_policy_digest: @current_knowledge_policy_digest,
+        index_version: @current_index_version
+      }
+      filters[:generation] = @current_generation if @current_generation
       if owner
         filters[:owner_type] = owner.class.name
         filters[:owner_id] = owner.id
@@ -263,6 +290,7 @@ module Maglev
     end
 
     def current_index_version
+      @current_generation = nil
       configuration = Maglev.configuration
       identity_configuration = IdentityConfiguration.new(
         embedding_model: configuration.embedding_model,
@@ -271,11 +299,39 @@ module Maglev
         embedding_adapter_version: configuration.embedding_adapter_version,
         application_index_version: configuration.application_index_version
       )
-      IndexIdentity.new(
+      identity = IndexIdentity.for(
+        model_class: @model_class,
         configuration: identity_configuration,
         adapter: @embedding_adapter,
         chunk_size: @chunk_size
-      ).to_s
+      )
+      @current_resource_identifier = identity.resource_identifier
+      @current_representation_version = identity.representation_version
+      @current_knowledge_policy_digest = identity.knowledge_policy_digest
+      active = active_generation
+      manifest_identity = active&.manifest&.fetch(@current_resource_identifier, nil)
+      if manifest_identity.is_a?(Hash)
+        @current_representation_version = manifest_identity.fetch("representation_version")
+        @current_knowledge_policy_digest = manifest_identity.fetch("knowledge_policy_digest")
+        @current_generation = active.generation
+        return manifest_identity.fetch("index_version")
+      elsif manifest_identity
+        @current_generation = active.generation
+        return manifest_identity
+      end
+      identity.to_s
+    end
+
+    def active_generation
+      return unless IndexGeneration.table_exists?
+
+      IndexGeneration.active
+    rescue ActiveRecord::ConnectionNotDefined, ActiveRecord::StatementInvalid
+      nil
+    end
+
+    def generation_column?
+      !@chunk_model.respond_to?(:columns_hash) || @chunk_model.columns_hash.key?("generation")
     end
 
     def validate_embedding!(embedding)
@@ -294,6 +350,7 @@ module Maglev
         SearchResult.new(
           owner: owner,
           content: row.content,
+          context: row.respond_to?(:context) ? row.context : {},
           source: row.source,
           distance: row.respond_to?(:neighbor_distance) ? row.neighbor_distance : row.distance,
           chunk_index: row.respond_to?(:chunk_index) ? row.chunk_index : nil,
@@ -326,8 +383,19 @@ module Maglev
           return false unless row.owner.respond_to?(:id) && row.owner.id.to_s == row.owner_id.to_s
         end
       end
+      if @vector_store.respond_to?(:contract_version) && @vector_store.contract_version >= 3
+        return false unless row.respond_to?(:index_version) && row.index_version == @current_index_version
+        return false unless row.respond_to?(:resource_identifier) && row.resource_identifier == @current_resource_identifier
+        return false unless row.respond_to?(:representation_version) && row.representation_version == @current_representation_version
+        return false unless row.respond_to?(:knowledge_policy_digest) && row.knowledge_policy_digest == @current_knowledge_policy_digest
+      end
 
       true
+    end
+
+    def index_identity_columns?
+      !@chunk_model.respond_to?(:columns_hash) ||
+        %w[resource_identifier representation_version knowledge_policy_digest].all? { |name| @chunk_model.columns_hash.key?(name) }
     end
 
     def inferred_source_type(source)

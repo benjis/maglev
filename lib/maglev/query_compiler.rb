@@ -8,15 +8,20 @@ module Maglev
   end
 
   class StructuredPlan
-    attr_reader :relation, :operations, :explanation, :warnings, :aggregate, :aggregate_column
+    attr_reader :relation, :operations, :explanation, :warnings, :aggregate, :aggregate_column,
+      :group_by, :group_columns, :group_limit
 
-    def initialize(relation:, operations:, explanation:, aggregate: nil, aggregate_column: nil, warnings: [])
+    def initialize(relation:, operations:, explanation:, aggregate: nil, aggregate_column: nil,
+      group_by: [], group_columns: [], group_limit: nil, warnings: [])
       @relation = relation
       @operations = operations.freeze
       @explanation = explanation.to_s.freeze
       @warnings = warnings.freeze
       @aggregate = aggregate
       @aggregate_column = aggregate_column
+      @group_by = group_by.freeze
+      @group_columns = group_columns.freeze
+      @group_limit = group_limit
       freeze
     end
 
@@ -77,6 +82,9 @@ module Maglev
         relation: relation,
         aggregate: ir.aggregate,
         aggregate_column: aggregate_column(root_model, ir.aggregate),
+        group_by: ir.group_by,
+        group_columns: ir.group_by.map { |group| group_column(root_model, group) },
+        group_limit: resource.limits.fetch(:groups, QueryValidator::DEFAULT_LIMITS[:groups]),
         operations: operation_descriptions(ir),
         explanation: validation.explanation
       )
@@ -92,9 +100,11 @@ module Maglev
       declaration = resource.scopes.find { |candidate| candidate.fetch(:name) == scope.name }
       raise QueryCompilationError, "The validated scope is unavailable" unless declaration
 
-      values = declaration.fetch(:parameters).keys.map { |name| literal_value(scope.parameters.fetch(name)) }
+      values = declaration.fetch(:parameters).keys
+        .take_while { |name| scope.parameters.key?(name) }
+        .map { |name| literal_value(scope.parameters.fetch(name)) }
       scoped = ActiveRecord::Base.while_preventing_writes do
-        relation.public_send(scope.name, *values)
+        relation.scoping { relation.klass.public_send(scope.name, *values) }
       end
       if scoped.respond_to?(:unscope_values) && scoped.unscope_values.any?
         raise QueryCompilationError, "Registered scope cannot remove relation constraints"
@@ -105,8 +115,12 @@ module Maglev
       raise QueryCompilationError, "Registered scope cannot widen the base relation" unless preserves_relation?(relation, scoped)
 
       scoped
+    rescue QueryCompilationError
+      raise
     rescue ActiveRecord::ReadOnlyError
       raise QueryCompilationError, "Registered scope cannot widen the base relation or introduce unsafe clauses"
+    rescue => error
+      raise QueryCompilationError, "Registered scope could not be applied safely: #{error.class.name}"
     end
 
     def apply_predicate(relation, root_model, predicate)
@@ -143,7 +157,21 @@ module Maglev
     def aggregate_column(root_model, aggregate)
       return unless aggregate&.field
 
-      model_for_path(root_model, aggregate.field.segments).arel_table[aggregate.field.segments.last]
+      column_for_path(root_model, aggregate.field)
+    end
+
+    def column_for_path(root_model, path)
+      model_for_path(root_model, path.segments).arel_table[path.segments.last]
+    end
+
+    def group_column(root_model, group)
+      column = column_for_path(root_model, group.field)
+      return column unless group.bucket
+
+      Arel::Nodes::NamedFunction.new("DATE_TRUNC", [
+        Arel::Nodes.build_quoted(group.bucket.to_s),
+        column
+      ])
     end
 
     def preserves_relation?(base, scoped)
@@ -190,7 +218,8 @@ module Maglev
         *ir.sort.map { |sort| "sort #{sort.field} #{sort.direction}" },
         ("distinct" if ir.distinct),
         "limit #{ir.limit}",
-        ("aggregate #{ir.aggregate.function}" if ir.aggregate)
+        ("aggregate #{ir.aggregate.function}" if ir.aggregate),
+        *ir.group_by.map { |group| "group #{group.field}" }
       ].compact.freeze
     end
   end

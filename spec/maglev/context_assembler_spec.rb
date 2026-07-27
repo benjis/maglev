@@ -28,6 +28,7 @@ RSpec.describe Maglev::ContextAssembler do
         source: "snapshot",
         chunk_index: 0,
         content: "b" * 24,
+        context: {},
         distance: 0.1,
         similarity: 0.9
       },
@@ -38,6 +39,7 @@ RSpec.describe Maglev::ContextAssembler do
         source: "snapshot",
         chunk_index: 0,
         content: "c" * 24,
+        context: {},
         distance: 0.2,
         similarity: 0.8
       }

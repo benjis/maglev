@@ -339,7 +339,7 @@ RSpec.describe "structured query compilation and execution" do
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
       candidates.each do |overrides|
         input = {
-          "version" => 1, "root" => "structured_orders", "operation" => "records",
+          "version" => 2, "root" => "structured_orders", "operation" => "records",
           "scopes" => [], "filters" => [], "joins" => [], "sort" => [], "distinct" => false, "limit" => 10
         }.merge(overrides)
         expect(Maglev::QueryValidator.new(snapshot: snapshot, root: :structured_orders).call(input)).not_to be_valid
@@ -351,7 +351,7 @@ RSpec.describe "structured query compilation and execution" do
 
   it "executes a ready public plan into an immutable bounded relation result and structured evidence" do
     adapter = Maglev::FakePlannerAdapter.new([{"status" => "ready", "ir" => {
-      "version" => 1, "root" => "structured_orders", "operation" => "records",
+      "version" => 2, "root" => "structured_orders", "operation" => "records",
       "scopes" => [], "filters" => [{"field" => "status", "operator" => "eq", "value" => "paid"}],
       "joins" => [], "sort" => [], "distinct" => false, "limit" => 1
     }}])
@@ -374,7 +374,7 @@ RSpec.describe "structured query compilation and execution" do
 
   it "serializes bounded-array predicates into structured evidence" do
     adapter = Maglev::FakePlannerAdapter.new([{"status" => "ready", "ir" => {
-      "version" => 1, "root" => "structured_orders", "operation" => "records",
+      "version" => 2, "root" => "structured_orders", "operation" => "records",
       "scopes" => [], "filters" => [{"field" => "total", "operator" => "between", "value" => [10, 20]}],
       "joins" => [], "sort" => [], "distinct" => false, "limit" => 10
     }}])
@@ -390,7 +390,7 @@ RSpec.describe "structured query compilation and execution" do
 
   it "does not enumerate relation evidence until requested and applies an independent evidence row budget" do
     adapter = Maglev::FakePlannerAdapter.new([{"status" => "ready", "ir" => {
-      "version" => 1, "root" => "structured_orders", "operation" => "records", "scopes" => [],
+      "version" => 2, "root" => "structured_orders", "operation" => "records", "scopes" => [],
       "filters" => [], "joins" => [], "sort" => [], "distinct" => false, "limit" => 10
     }}])
     plan = Maglev.plan("Orders", resource: :structured_orders,
@@ -409,7 +409,7 @@ RSpec.describe "structured query compilation and execution" do
 
   it "bounds the complete serialized evidence envelope by bytes and reports only safe counts" do
     adapter = Maglev::FakePlannerAdapter.new([{"status" => "ready", "ir" => {
-      "version" => 1, "root" => "structured_orders", "operation" => "records", "scopes" => [],
+      "version" => 2, "root" => "structured_orders", "operation" => "records", "scopes" => [],
       "filters" => [], "joins" => [], "sort" => [], "distinct" => false, "limit" => 10
     }}])
     plan = Maglev.plan("Orders", resource: :structured_orders,
@@ -432,7 +432,7 @@ RSpec.describe "structured query compilation and execution" do
 
   it "returns deterministic aggregate and unsupported results without calling a generation provider" do
     aggregate_adapter = Maglev::FakePlannerAdapter.new([{"status" => "ready", "ir" => {
-      "version" => 1, "root" => "structured_orders", "operation" => "aggregate",
+      "version" => 2, "root" => "structured_orders", "operation" => "aggregate",
       "scopes" => [], "filters" => [], "joins" => [], "sort" => [], "distinct" => false,
       "limit" => 10, "aggregate" => {"function" => "count"}
     }}])
@@ -458,7 +458,7 @@ RSpec.describe "structured query compilation and execution" do
     audits = []
     callback = ->(name, _start, _finish, _id, payload) { events << [name, payload] }
     adapter = Maglev::FakePlannerAdapter.new([{"status" => "ready", "ir" => {
-      "version" => 1, "root" => "structured_orders", "operation" => "records",
+      "version" => 2, "root" => "structured_orders", "operation" => "records",
       "scopes" => [], "filters" => [{"field" => "note", "operator" => "eq", "value" => "value-secret"}],
       "joins" => [], "sort" => [], "distinct" => false, "limit" => 1
     }}])
@@ -495,7 +495,7 @@ RSpec.describe "structured query compilation and execution" do
 
   def validation_for(snapshot, overrides)
     input = {
-      "version" => 1, "root" => "structured_orders", "operation" => "records",
+      "version" => 2, "root" => "structured_orders", "operation" => "records",
       "scopes" => [], "filters" => [], "joins" => [], "sort" => [], "distinct" => false, "limit" => 10
     }.merge(overrides)
     validation = Maglev::QueryValidator.new(snapshot: snapshot, root: :structured_orders).call(input)

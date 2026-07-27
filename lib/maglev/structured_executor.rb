@@ -85,18 +85,46 @@ module Maglev
 
     def execute_aggregate(plan)
       aggregate = plan.aggregate
+      return execute_grouped_aggregate(plan) if plan.group_by.any?
+
       values = if aggregate.function == :count
         plan.relation.pluck(plan.relation.klass.arel_table[plan.relation.klass.primary_key])
       else
         plan.relation.pluck(plan.aggregate_column)
       end
 
-      case aggregate.function
+      aggregate_values(aggregate.function, values)
+    end
+
+    def execute_grouped_aggregate(plan)
+      value_column = if plan.aggregate.function == :count
+        plan.relation.klass.arel_table[plan.relation.klass.primary_key]
+      else
+        plan.aggregate_column
+      end
+      rows = plan.relation.except(:order).pluck(*plan.group_columns, value_column)
+      grouped = rows.group_by { |row| Array(row).first(plan.group_columns.length) }
+      if grouped.length > plan.group_limit
+        raise StructuredExecutionError, "Grouped aggregate exceeds the authorized group limit"
+      end
+
+      grouped.map do |keys, members|
+        values = members.map { |row| Array(row).last }
+        value = aggregate_values(plan.aggregate.function, values)
+        plan.group_by.each_with_index.to_h { |group, index| [group.label, keys.fetch(index)] }
+          .merge(plan.aggregate.label => value)
+      end.sort_by { |row| plan.group_by.map { |group| [row.fetch(group.label).nil? ? 0 : 1, row.fetch(group.label).to_s] } }
+    end
+
+    def aggregate_values(function, values)
+      case function
       when :count then values.length
-      when :sum then values.sum
-      when :average then values.empty? ? nil : BigDecimal(values.sum.to_s) / values.length
-      when :minimum then values.min
-      when :maximum then values.max
+      when :sum then values.compact.sum
+      when :average
+        values = values.compact
+        values.empty? ? nil : BigDecimal(values.sum.to_s) / values.length
+      when :minimum then values.compact.min
+      when :maximum then values.compact.max
       else raise StructuredExecutionError, "The aggregate is unavailable"
       end
     end
@@ -145,13 +173,40 @@ module Maglev
     else
       value = Trace.instrument(:execution, trace_id: plan.trace_id, resource: plan.resource,
         operation: plan.ir.operation) { executor.execute(compiled) }
-      scalar_size = JSON.generate("records" => [], "scalar" => value, "filters" => filters,
-        "date_ranges" => date_ranges, "count" => 1, "truncated" => false).bytesize
-      bounded_scalar = scalar_size <= evidence_bytes
-      evidence = StructuredEvidence.new(scalar: bounded_scalar ? value : nil, filters: filters,
-        date_ranges: date_ranges, count: bounded_scalar ? 1 : 0, truncated: !bounded_scalar)
-      StructuredResult.new(status: :succeeded, kind: :aggregate, value: value, evidence: evidence,
+      grouped = plan.ir.group_by.any?
+      bounded_value = if grouped
+        bound_grouped_rows(value, evidence_rows, evidence_bytes, filters, date_ranges)
+      else
+        scalar_size = JSON.generate("records" => [], "scalar" => value, "filters" => filters,
+          "date_ranges" => date_ranges, "count" => 1, "truncated" => false).bytesize
+        [value, [], scalar_size <= evidence_bytes, scalar_size > evidence_bytes]
+      end
+      scalar, records, included, truncated = bounded_value
+      evidence = StructuredEvidence.new(records: records, scalar: included ? scalar : nil, filters: filters,
+        date_ranges: date_ranges, count: if grouped
+                                           records.length
+                                         else
+                                           (included ? 1 : 0)
+                                         end, truncated: truncated)
+      StructuredResult.new(status: :succeeded, kind: grouped ? :table : :aggregate, value: value, evidence: evidence,
         interpretation: plan.explanation, warnings: plan.warnings, plan: plan, trace_id: plan.trace_id)
     end
+  end
+
+  def self.bound_grouped_rows(rows, row_limit, byte_limit, filters, date_ranges)
+    selected = []
+    rows.each do |row|
+      break if selected.length >= row_limit
+
+      candidate = selected + [row]
+      size = JSON.generate("records" => candidate, "scalar" => nil, "filters" => filters,
+        "date_ranges" => date_ranges, "count" => candidate.length,
+        "truncated" => candidate.length < rows.length).bytesize
+      break if size > byte_limit
+
+      selected = candidate
+    end
+    truncated = selected.length < rows.length
+    [nil, selected.freeze, true, truncated]
   end
 end

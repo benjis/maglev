@@ -10,46 +10,58 @@ class TestKnowledgeRecord
 end
 
 RSpec.describe Maglev::KnowledgeConfig do
-  it "normalizes exposed, hidden, and tag declarations" do
+  it "normalizes independent content, context, prohibited, and tag declarations" do
     config = described_class.build(TestKnowledgeRecord) do
-      expose :name, "industry", :name
-      hide :internal_note, "internal_note"
+      content :name, "description", :name
+      context :industry, "industry"
+      prohibit :internal_note, "internal_note"
       tags :customer, "commercial", :customer
     end
 
-    expect(config.exposed_attributes).to eq(%w[name industry])
-    expect(config.hidden_attributes).to eq(["internal_note"])
+    expect(config.content_attributes).to eq(%w[name description])
+    expect(config.context_attributes).to eq(["industry"])
+    expect(config.prohibited_attributes).to eq(["internal_note"])
     expect(config.tags).to eq(%w[customer commercial])
   end
 
-  it "rejects unknown exposed attributes with a Maglev-specific error" do
+  it "rejects unknown knowledge attributes with a Maglev-specific error" do
     expect do
       described_class.build(TestKnowledgeRecord) do
-        expose :unknown_field
+        content :unknown_field
       end
     end.to raise_error(Maglev::ConfigurationError, /unknown_field/)
   end
 
-  it "rejects expose and hide conflicts with a Maglev-specific error" do
+  it "rejects content and context conflicts deterministically" do
     expect do
       described_class.build(TestKnowledgeRecord) do
-        expose :name
-        hide :name
+        content :name
+        context :name
       end
-    end.to raise_error(Maglev::ConfigurationError, /both exposed and hidden/)
+    end.to raise_error(Maglev::ConfigurationError, /both content and context.*name/i)
+  end
+
+  it "requires at least one semantic content field" do
+    expect do
+      described_class.build(TestKnowledgeRecord) do
+        context :industry
+      end
+    end.to raise_error(Maglev::ConfigurationError, /requires at least one content/i)
   end
 
   it "returns immutable caller-facing collections" do
     config = described_class.build(TestKnowledgeRecord) do
-      expose :name
-      hide :internal_note
+      content :name
+      context :industry
+      prohibit :internal_note
       tags :customer
     end
 
     expect(config).to be_frozen
-    expect(config.exposed_attributes).to be_frozen
-    expect(config.hidden_attributes).to be_frozen
+    expect(config.content_attributes).to be_frozen
+    expect(config.context_attributes).to be_frozen
+    expect(config.prohibited_attributes).to be_frozen
     expect(config.tags).to be_frozen
-    expect { config.exposed_attributes << "industry" }.to raise_error(FrozenError)
+    expect { config.content_attributes << "description" }.to raise_error(FrozenError)
   end
 end

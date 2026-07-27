@@ -59,7 +59,7 @@ module Maglev
 
   class StructuredResult
     STATUSES = %i[succeeded clarification_required unsupported failed].freeze
-    KINDS = %i[relation scalar aggregate none].freeze
+    KINDS = %i[relation scalar aggregate table none].freeze
 
     attr_reader :status, :route, :kind, :value, :evidence, :interpretation, :warnings, :plan, :trace_id
 

@@ -25,9 +25,7 @@ Gem::Specification.new do |spec|
       "README.zh-CN.md",
       "README.ja.md",
       "lib/**/*.rb",
-      "lib/**/*.rake",
-      "docs/**/*.md"
-    ] - Dir["docs/superpowers/**/*.md"]
+      "lib/**/*.rake" ]
   end
   spec.require_paths = ["lib"]
 

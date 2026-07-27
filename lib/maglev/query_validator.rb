@@ -8,7 +8,7 @@ require_relative "schema_snapshot"
 module Maglev
   class QueryValidator
     attr_reader :policy_limits
-    ROOT_KEYS = %w[version root operation scopes filters joins sort distinct limit aggregate].freeze
+    ROOT_KEYS = %w[version root operation scopes filters joins sort distinct limit aggregate group_by].freeze
     OPERATIONS = %w[records aggregate].freeze
     OPERATORS = %w[eq not_eq gt gte lt lte in not_in is_null is_not_null between].freeze
     COMPARISON_OPERATORS = %w[gt gte lt lte between].freeze
@@ -16,7 +16,9 @@ module Maglev
     NULL_OPERATORS = %w[is_null is_not_null].freeze
     NUMERIC_TYPES = %i[integer float decimal].freeze
     TIME_TYPES = %i[date datetime timestamp time].freeze
-    DEFAULT_LIMITS = {rows: 100, operations: 30, joins: 2, complexity: 100}.freeze
+    BUCKETABLE_TIME_TYPES = %i[date datetime timestamp].freeze
+    TEMPORAL_BUCKETS = %w[hour day week month quarter year].freeze
+    DEFAULT_LIMITS = {rows: 100, groups: 100, operations: 30, joins: 2, complexity: 100}.freeze
 
     Error = Struct.new(:code, :message, :path, :details) do
       def initialize(**attributes)
@@ -56,11 +58,12 @@ module Maglev
       end
       unknown = input.keys - ROOT_KEYS
       error(:invalid_ir, "Query IR contains unknown keys", [], keys: unknown.sort) if unknown.any?
-      error(:invalid_ir, "Unsupported Query IR version", ["version"]) unless input["version"] == 1
+      error(:invalid_ir, "Unsupported Query IR version", ["version"]) unless input["version"] == QueryIR::VERSION
       error(:unregistered, "The requested root resource is unavailable", ["root"], resource: @root) unless input["root"] == @root && @resources.key?(@root)
       error(:invalid_ir, "Unknown operation", ["operation"]) unless OPERATIONS.include?(input["operation"])
       return result if @errors.any?
 
+      @current_version = input["version"]
       scopes = validate_scopes(input.fetch("scopes", []))
       joins = validate_joins(input.fetch("joins", []))
       filters = validate_filters(input.fetch("filters", []), joins)
@@ -69,14 +72,19 @@ module Maglev
       error(:invalid_ir, "Distinct must be boolean", ["distinct"]) unless [true, false].include?(distinct)
       limit = validate_limit(input.fetch("limit", @limits[:rows]))
       aggregate = validate_aggregate(input["operation"], input["aggregate"], joins)
-      operation_count = scopes.length + filters.length + joins.length + sort.length + (distinct ? 1 : 0) + (aggregate ? 1 : 0)
+      group_by = validate_grouping(input["version"], input["operation"], input.fetch("group_by", []), joins)
+      if aggregate && group_by.any? { |group| group.label == aggregate.label }
+        error(:invalid_ir, "Aggregate and grouping labels must be unique", ["aggregate", "label"])
+      end
+      operation_count = scopes.length + filters.length + joins.length + sort.length + group_by.length + (distinct ? 1 : 0) + (aggregate ? 1 : 0)
       error(:limit_exceeded, "Operation limit exceeded", [], limit: @limits[:operations]) if operation_count > @limits[:operations]
-      complexity = filters.sum { |filter| 1 + filter.field.segments.length } + scopes.length * 2 + joins.sum { |join| join.segments.length * 3 } + sort.length + (aggregate ? 2 : 0)
+      complexity = filters.sum { |filter| 1 + filter.field.segments.length } + scopes.length * 2 + joins.sum { |join| join.segments.length * 3 } + sort.length + group_by.length * 2 + (aggregate ? 2 : 0)
       error(:limit_exceeded, "Query complexity exceeded", [], limit: @limits[:complexity]) if complexity > @limits[:complexity]
       return result if @errors.any?
 
-      ir = QueryIR::Query.new(version: 1, root: @root, operation: input["operation"], scopes: scopes,
-        filters: filters, joins: joins, sort: sort, distinct: distinct, limit: limit, aggregate: aggregate)
+      ir = QueryIR::Query.new(version: input["version"], root: @root, operation: input["operation"], scopes: scopes,
+        filters: filters, joins: joins, sort: sort, distinct: distinct, limit: limit, aggregate: aggregate,
+        group_by: group_by)
       Result.new(ir: ir, errors: [], explanation: explain(ir), snapshot: @snapshot)
     rescue KeyError, TypeError, ArgumentError
       error(:invalid_ir, "Malformed Query IR", [])
@@ -106,9 +114,17 @@ module Maglev
     def validate_parameters(values, schemas, path)
       unknown = values.keys - schemas.keys
       error(:invalid_ir, "Unknown scope parameters", path, keys: unknown.sort) if unknown.any?
+      omitted = false
       schemas.each_with_object({}) do |(name, schema), result|
         if !values.key?(name)
           error(:invalid_ir, "Required scope parameter is missing", path + [name]) if schema.fetch(:required)
+          omitted = true
+        elsif omitted
+          error(
+            :invalid_ir,
+            "Scope parameters must be provided in declaration order without gaps",
+            path + [name]
+          )
         else
           result[name] = coerce(values[name], schema.fetch(:type), schema, path + [name])
         end
@@ -176,24 +192,93 @@ module Maglev
         error(:invalid_ir, "Aggregate is only valid for aggregate operations", ["aggregate"]) if value
         return
       end
-      unless value.is_a?(Hash) && value.keys.all? { |key| %w[function field].include?(key) } && value["function"].is_a?(String)
+      allowed_keys = %w[function field]
+      allowed_keys << "label" if @current_version == 2
+      unless value.is_a?(Hash) && value.keys.all? { |key| allowed_keys.include?(key) } && value["function"].is_a?(String)
         error(:invalid_ir, "Aggregate is required", ["aggregate"])
         return
       end
       function = value["function"].to_sym
-      permission = @resources.fetch(@root).aggregates[function]
-      unless permission
-        error(:unregistered, "The requested aggregate is not registered", ["aggregate", "function"], resource: @root)
-        return
-      end
       field_path = value["field"]
       if function == :count
+        permission = @resources.fetch(@root).aggregates[function]
+        unless permission
+          error(:unregistered, "The requested aggregate is not registered", ["aggregate", "function"], resource: @root)
+          return
+        end
         error(:invalid_ir, "Count does not accept a field", ["aggregate", "field"]) if field_path
-      elsif !field_path || !resolve_field(field_path, joins, ["aggregate", "field"]) || permission != true && !permission.include?(field_path)
-        error(:unregistered, "The aggregate field is not registered", ["aggregate", "field"], resource: @root)
+      else
+        field = field_path && resolve_analytical_field(field_path, joins, ["aggregate", "field"])
+        aggregate_resource, aggregate_name = analytical_resource_and_name(field_path)
+        permission = aggregate_resource&.aggregates&.fetch(function, nil)
+        compatible = field && aggregate_compatible?(function, field.type)
+        permitted = permission == true || Array(permission).include?(aggregate_name)
+        unless compatible && permitted
+          error(:unregistered, "The aggregate field is not registered", ["aggregate", "field"], resource: @root)
+          return
+        end
+      end
+      label = value["label"] || function.to_s
+      unless label.is_a?(String) && label.match?(/\A[a-zA-Z][a-zA-Z0-9_]{0,63}\z/)
+        error(:invalid_ir, "Invalid aggregate label", ["aggregate", "label"])
         return
       end
-      QueryIR::Aggregate.new(function: function, field: field_path && QueryIR::Path.new(field_path))
+      QueryIR::Aggregate.new(function: function, field: field_path && QueryIR::Path.new(field_path), label: label.freeze)
+    end
+
+    def validate_grouping(version, operation, values, joins)
+      return invalid_collection("Group by", ["group_by"]) unless values.is_a?(Array)
+      if values.any? && (version != 2 || operation != "aggregate")
+        error(:invalid_ir, "Grouping requires a version 2 aggregate operation", ["group_by"])
+        return []
+      end
+      return [] if values.empty?
+      if values.length > @limits[:groups]
+        error(:limit_exceeded, "Grouping field limit exceeded", ["group_by"], limit: @limits[:groups])
+        return []
+      end
+
+      labels = []
+      values.each_with_index.filter_map do |value, index|
+        unless value.is_a?(Hash) && value.keys.all? { |key| %w[field label bucket].include?(key) } &&
+            %w[field label].all? { |key| value.key?(key) } && value["field"].is_a?(String) &&
+            value["label"].is_a?(String) && value["label"].match?(/\A[a-zA-Z][a-zA-Z0-9_]{0,63}\z/)
+          error(:invalid_ir, "Invalid grouping", ["group_by", index])
+          next
+        end
+        field = resolve_analytical_field(value["field"], joins, ["group_by", index, "field"])
+        grouping_resource, grouping_name = analytical_resource_and_name(value["field"])
+        permitted = grouping_resource&.grouping&.include?(grouping_name)
+        unless field && permitted
+          error(:unregistered, "The grouping field is not registered", ["group_by", index, "field"], resource: @root)
+          next
+        end
+        bucket = value["bucket"]
+        if bucket && (!TEMPORAL_BUCKETS.include?(bucket) || !BUCKETABLE_TIME_TYPES.include?(field.type.to_sym))
+          error(:invalid_ir, "Invalid temporal bucket", ["group_by", index, "bucket"])
+          next
+        end
+        if labels.include?(value["label"])
+          error(:invalid_ir, "Grouping labels must be unique", ["group_by", index, "label"])
+          next
+        end
+        labels << value["label"]
+        QueryIR::Group.new(field: QueryIR::Path.new(value["field"]), label: value["label"].freeze,
+          bucket: bucket&.to_sym)
+      end
+    end
+
+    def analytical_resource_and_name(path)
+      segments = path.to_s.split(".")
+      resource = @resources.fetch(@root)
+      segments[0...-1].each do |association_name|
+        association = resource.associations.find { |candidate| candidate.name == association_name }
+        return [nil, nil] unless association
+
+        resource = @resources[association.resource]
+        return [nil, nil] unless resource
+      end
+      [resource, segments.last]
     end
 
     def resolve_field(path, joins, error_path)
@@ -226,6 +311,25 @@ module Maglev
 
       error(:unregistered, "The requested field is not registered", error_path, resource: @root)
       nil
+    end
+
+    def resolve_analytical_field(path, joins, error_path)
+      return resolve_field(path, joins, error_path) if path.to_s.include?(".")
+
+      resource = @resources.fetch(@root)
+      field = (resource.fields + resource.analytical_fields).find { |candidate| candidate.name == path }
+      return field if field
+
+      error(:unregistered, "The requested analytical field is not registered", error_path, resource: @root)
+      nil
+    end
+
+    def aggregate_compatible?(function, type)
+      case function
+      when :sum, :average then NUMERIC_TYPES.include?(type.to_sym)
+      when :minimum, :maximum then NUMERIC_TYPES.include?(type.to_sym) || TIME_TYPES.include?(type.to_sym)
+      else false
+      end
     end
 
     def coerce_filter(value, field, operator, path)

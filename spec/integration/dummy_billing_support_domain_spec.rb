@@ -23,7 +23,7 @@ RSpec.describe "dummy billing and support reference domain" do
 
     snapshot = Maglev::Registry.snapshot(resources: [:invoices], authorizer: ->(*) { true })
     validation = Maglev::QueryValidator.new(snapshot: snapshot, root: :invoices).call(
-      "version" => 1,
+      "version" => 2,
       "root" => "invoices",
       "operation" => "records",
       "filters" => [{"field" => "status", "operator" => "eq", "value" => "open"}],

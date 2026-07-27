@@ -7,7 +7,7 @@ RSpec.describe Maglev::PlannerEvaluation do
   it "scores semantic IR equivalence instead of exact JSON ordering" do
     expected = {
       "status" => "ready",
-      "ir" => {"version" => 1, "root" => "orders", "operation" => "records",
+      "ir" => {"version" => 2, "root" => "orders", "operation" => "records",
                "filters" => [
                  {"field" => "status", "operator" => "eq", "value" => "paid"},
                  {"field" => "total", "operator" => "gte", "value" => 10}

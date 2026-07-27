@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rails_helper"
+require "active_job/test_helper"
 require "maglev/dependency_graph"
 require "maglev/knowledge_registry"
 
@@ -15,6 +16,8 @@ class ReloadTestOwner
 end
 
 RSpec.describe "Rails reload lifecycle" do
+  include ActiveJob::TestHelper
+
   before do
     @original_edges = Maglev::DependencyGraph.instance_variable_get(:@edges)
     Maglev::DependencyGraph.instance_variable_set(:@edges, Hash.new { |hash, klass| hash[klass] = [] })
@@ -98,6 +101,155 @@ RSpec.describe "Rails reload lifecycle" do
     Object.send(:remove_const, :ReloadableKnowledgeItem) if defined?(ReloadableKnowledgeItem)
   end
 
+  it "refreshes reflected schema and independent policies from replacement model definitions" do
+    define_reloadable_policy_model(
+      field: :name,
+      association: :reviews,
+      knowledge_content: :name
+    )
+    Rails.application.reloader.prepare!
+    stale_class = ReloadablePolicyCustomer
+
+    expect(reloadable_policy_entry).to have_attributes(model_class: stale_class)
+    expect(reloadable_policy_entry.queryable.fields.map(&:name)).to eq(["name"])
+    expect(reloadable_policy_entry.queryable.associations.map(&:name)).to eq(["reviews"])
+    expect(reloadable_policy_entry.knowledge.content_attributes).to eq(["name"])
+
+    Object.send(:remove_const, :ReloadablePolicyCustomer)
+    define_reloadable_policy_model(
+      field: :email,
+      association: :account,
+      knowledge_content: :email
+    )
+    Rails.application.reloader.prepare!
+
+    current_entry = reloadable_policy_entry
+    expect(current_entry.model_class).to equal(ReloadablePolicyCustomer)
+    expect(current_entry.model_class).not_to equal(stale_class)
+    expect(current_entry.queryable.fields.map(&:name)).to eq(["email"])
+    expect(current_entry.queryable.associations.map(&:name)).to eq(["account"])
+    expect(current_entry.knowledge.content_attributes).to eq(["email"])
+    expect(Maglev::Registry.entries.map(&:model_class)).not_to include(stale_class)
+  ensure
+    Object.send(:remove_const, :ReloadablePolicyCustomer) if defined?(ReloadablePolicyCustomer)
+  end
+
+  it "replaces a prior identifier for the same reloadable model without retaining its stale class" do
+    old_model = define_reloadable_identity_model(:legacy_reloadable_customers)
+    expect(Maglev::Registry.fetch(:legacy_reloadable_customers).model_class).to equal(old_model)
+
+    Object.send(:remove_const, :ReloadableIdentityCustomer)
+    current_model = define_reloadable_identity_model(:reloadable_customers)
+
+    expect(Maglev::Registry.fetch(:legacy_reloadable_customers)).to be_nil
+    expect(Maglev::Registry.fetch(:reloadable_customers).model_class).to equal(current_model)
+    expect(Maglev::Registry.entries.count { |entry| entry.model_class.name == "ReloadableIdentityCustomer" }).to eq(1)
+  ensure
+    Object.send(:remove_const, :ReloadableIdentityCustomer) if defined?(ReloadableIdentityCustomer)
+  end
+
+  it "deserializes background indexing against the current model class" do
+    stale_class = define_reloadable_job_model
+    serialized_job = Maglev::ReindexJob.new("ReloadableJobCustomer", 7).serialize
+
+    Object.send(:remove_const, :ReloadableJobCustomer)
+    current_class = define_reloadable_job_model
+    current_record = current_class.new(id: 7, name: "Current")
+    allow(current_class).to receive(:find).with(7).and_return(current_record)
+    indexer = instance_double(Maglev::Indexer, index: true)
+    expect(Maglev::Indexer).to receive(:new).with(current_record, provider_call: instance_of(Maglev::ProviderCall)).and_return(indexer)
+
+    ActiveJob::Base.deserialize(serialized_job).perform_now
+
+    expect(current_record).to be_a(current_class)
+    expect(current_record).not_to be_a(stale_class)
+  ensure
+    Object.send(:remove_const, :ReloadableJobCustomer) if defined?(ReloadableJobCustomer)
+  end
+
+  it "executes a business question against the current resource class after reload" do
+    original_policy_resolver = Maglev.configuration.policy_resolver
+    original_planner_adapter = Maglev.configuration.planner_adapter
+    stale_class = define_reloadable_question_model
+    Rails.application.reloader.prepare!
+
+    Object.send(:remove_const, :ReloadableQuestionCustomer)
+    current_class = define_reloadable_question_model
+    Rails.application.reloader.prepare!
+    Maglev.configuration.policy_resolver = lambda do |user:, context:|
+      {
+        reloadable_question_customers: {
+          base_relation: current_class.where(id: -1),
+          planning_facts: {user_present: !user.nil?, context_present: !context.nil?}
+        }
+      }
+    end
+    Maglev.configuration.planner_adapter = Maglev::FakePlannerAdapter.new([{
+      "status" => "ready",
+      "ir" => {
+        "version" => 2,
+        "root" => "reloadable_question_customers",
+        "operation" => "aggregate",
+        "scopes" => [],
+        "filters" => [],
+        "joins" => [],
+        "sort" => [],
+        "distinct" => false,
+        "limit" => 10,
+        "aggregate" => {"function" => "count"}
+      }
+    }])
+
+    outcome = Maglev.ask("How many customers?", user: Object.new, context: {})
+
+    expect(outcome).to have_attributes(status: :answered, answer: "Count: 0")
+    expect(Maglev::Registry.fetch(:reloadable_question_customers).model_class).to equal(current_class)
+    expect(Maglev::Registry.entries.map(&:model_class)).not_to include(stale_class)
+  ensure
+    Maglev.configuration.policy_resolver = original_policy_resolver
+    Maglev.configuration.planner_adapter = original_planner_adapter
+    Object.send(:remove_const, :ReloadableQuestionCustomer) if defined?(ReloadableQuestionCustomer)
+  end
+
+  it "exposes equivalent capabilities when a model loads before or after preparation" do
+    define_reloadable_boot_model
+    Rails.application.reloader.prepare!
+    eagerly_loaded_capabilities = reloadable_boot_capabilities
+
+    Object.send(:remove_const, :ReloadableBootCustomer)
+    Rails.application.reloader.prepare!
+    expect(Maglev::Registry.fetch(:reloadable_boot_customers)).to be_nil
+
+    define_reloadable_boot_model
+    lazily_loaded_capabilities = reloadable_boot_capabilities
+
+    expect(lazily_loaded_capabilities).to eq(eagerly_loaded_capabilities)
+  ensure
+    Object.send(:remove_const, :ReloadableBootCustomer) if defined?(ReloadableBootCustomer)
+  end
+
+  it "keeps index generation access stable across repeated preparation" do
+    generation = Maglev::IndexGeneration.create!(
+      generation: "reload-lifecycle",
+      status: "active",
+      representation_version: Maglev::IndexIdentity::REPRESENTATION_VERSION,
+      manifest: {},
+      expected_record_count: 0,
+      indexed_record_count: 0,
+      started_at: Time.now.utc,
+      completed_at: Time.now.utc,
+      activated_at: Time.now.utc
+    )
+
+    3.times do
+      Rails.application.reloader.prepare!
+      expect(Maglev.index_generation("reload-lifecycle")).to eq(generation.reload)
+      expect(Maglev.active_index_generation).to eq(generation.reload)
+    end
+  ensure
+    Maglev::IndexGeneration.where(generation: "reload-lifecycle").delete_all
+  end
+
   it "repairs a missing Action Text callback even when the hook method survives" do
     skip "Action Text is not loaded" unless defined?(ActionText::RichText)
 
@@ -131,6 +283,82 @@ RSpec.describe "Rails reload lifecycle" do
         include_related :items, depth: 1, limit: 10, inverse: :owner
       end
     end
+  end
+
+  def define_reloadable_policy_model(field:, association:, knowledge_content:)
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "customers"
+      belongs_to :account
+      has_many :reviews, foreign_key: :customer_id
+    end
+    Object.const_set(:ReloadablePolicyCustomer, model)
+    model.maglev_resource(:reloadable_policy_customers) do
+      queryable do
+        field field
+        association association
+      end
+      knowledge { content knowledge_content }
+    end
+  end
+
+  def reloadable_policy_entry
+    Maglev::Registry.fetch(:reloadable_policy_customers)
+  end
+
+  def define_reloadable_identity_model(identifier)
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "customers"
+    end
+    Object.const_set(:ReloadableIdentityCustomer, model)
+    model.maglev_resource(identifier)
+    model
+  end
+
+  def define_reloadable_job_model
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "customers"
+    end
+    Object.const_set(:ReloadableJobCustomer, model)
+    model.maglev_resource(:reloadable_job_customers) do
+      knowledge { content :name }
+    end
+    model
+  end
+
+  def define_reloadable_boot_model
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "customers"
+      has_many :reviews, foreign_key: :customer_id
+    end
+    Object.const_set(:ReloadableBootCustomer, model)
+    model.maglev_resource(:reloadable_boot_customers) do
+      queryable do
+        field :name
+        association :reviews
+      end
+      knowledge { content :name }
+    end
+  end
+
+  def define_reloadable_question_model
+    model = Class.new(ActiveRecord::Base) do
+      self.table_name = "customers"
+    end
+    Object.const_set(:ReloadableQuestionCustomer, model)
+    model.maglev_resource(:reloadable_question_customers) do
+      queryable { aggregates count: true }
+    end
+    model
+  end
+
+  def reloadable_boot_capabilities
+    entry = Maglev::Registry.fetch(:reloadable_boot_customers)
+    {
+      identifier: entry.identifier,
+      fields: entry.queryable.fields.map(&:name),
+      associations: entry.queryable.associations.map(&:name),
+      content: entry.knowledge.content_attributes
+    }
   end
 
   def content_callback_counts

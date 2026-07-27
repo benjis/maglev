@@ -4,7 +4,7 @@ require "json"
 
 module Maglev
   module QueryIR
-    VERSION = 1
+    VERSION = 2
 
     module Value
       def to_json(*arguments)
@@ -93,19 +93,33 @@ module Maglev
       def initialize(**attributes) = super.tap { freeze }
       def to_h = {"field" => field.to_s, "direction" => direction.to_s}.freeze
     end
-    Aggregate = Struct.new(:function, :field) do
+    Aggregate = Struct.new(:function, :field, :label) do
       include Value
 
       def initialize(**attributes) = super.tap { freeze }
-      def to_h = {"function" => function.to_s}.tap { |hash| hash["field"] = field.to_s if field }.freeze
+
+      def to_h
+        {"function" => function.to_s, "label" => label}.tap { |hash| hash["field"] = field.to_s if field }.freeze
+      end
+    end
+    Group = Struct.new(:field, :label, :bucket) do
+      include Value
+
+      def initialize(**attributes) = super.tap { freeze }
+
+      def to_h
+        {"field" => field.to_s, "label" => label}.tap do |hash|
+          hash["bucket"] = bucket.to_s if bucket
+        end.freeze
+      end
     end
 
     class Query
       include Value
 
-      attr_reader :version, :root, :operation, :scopes, :filters, :joins, :sort, :distinct, :limit, :aggregate
+      attr_reader :version, :root, :operation, :scopes, :filters, :joins, :sort, :distinct, :limit, :aggregate, :group_by
 
-      def initialize(version:, root:, operation:, scopes:, filters:, joins:, sort:, distinct:, limit:, aggregate: nil)
+      def initialize(version:, root:, operation:, scopes:, filters:, joins:, sort:, distinct:, limit:, aggregate: nil, group_by: [])
         @version = version
         @root = root.to_s.freeze
         @operation = operation.to_sym
@@ -116,6 +130,7 @@ module Maglev
         @distinct = distinct
         @limit = limit
         @aggregate = aggregate
+        @group_by = group_by.freeze
         freeze
       end
 
@@ -125,6 +140,7 @@ module Maglev
                 "joins" => joins.map(&:to_s), "sort" => sort.map(&:to_h),
                 "distinct" => distinct, "limit" => limit}
         hash["aggregate"] = aggregate.to_h if aggregate
+        hash["group_by"] = group_by.map(&:to_h) if version >= 2
         hash.freeze
       end
     end
@@ -137,7 +153,13 @@ module Maglev
         joins: data.fetch("joins").map { |path| Path.new(path) },
         sort: data.fetch("sort").map { |sort| Sort.new(field: Path.new(sort.fetch("field")), direction: sort.fetch("direction").to_sym) },
         distinct: data.fetch("distinct"), limit: data.fetch("limit"),
-        aggregate: data["aggregate"] && Aggregate.new(function: data.dig("aggregate", "function").to_sym, field: data.dig("aggregate", "field") && Path.new(data.dig("aggregate", "field"))))
+        aggregate: data["aggregate"] && Aggregate.new(function: data.dig("aggregate", "function").to_sym,
+          field: data.dig("aggregate", "field") && Path.new(data.dig("aggregate", "field")),
+          label: data.dig("aggregate", "label")),
+        group_by: data.fetch("group_by", []).map do |group|
+          Group.new(field: Path.new(group.fetch("field")), label: group.fetch("label"),
+            bucket: group["bucket"]&.to_sym)
+        end)
     end
   end
 end

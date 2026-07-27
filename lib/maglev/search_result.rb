@@ -2,11 +2,12 @@
 
 module Maglev
   class SearchResult
-    attr_reader :owner, :content, :source, :distance, :chunk_index, :source_identity, :source_type, :score
+    attr_reader :owner, :content, :context, :source, :distance, :chunk_index, :source_identity, :source_type, :score
 
-    def initialize(owner:, content:, source:, distance:, chunk_index: nil, source_identity: nil, source_type: nil, score: nil)
+    def initialize(owner:, content:, source:, distance:, chunk_index: nil, source_identity: nil, source_type: nil, score: nil, context: {})
       @owner = owner
       @content = content
+      @context = context.to_h.dup.freeze
       @source = source
       @distance = distance
       @chunk_index = chunk_index

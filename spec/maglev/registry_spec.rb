@@ -60,7 +60,7 @@ RSpec.describe Maglev::Registry do
     expect(entry.queryable.fields).to be_frozen
   end
 
-  it "registers a knowledge-only resource without granting query access" do
+  it "reflects structured fields independently from an explicit knowledge declaration" do
     model = Class.new(ApplicationRecord) do
       self.table_name = "customers"
 
@@ -77,7 +77,8 @@ RSpec.describe Maglev::Registry do
     entry = described_class.fetch(:knowledge_only_registry_customers)
 
     expect(entry.model_class).to eq(model)
-    expect(entry.queryable).to be_nil
+    expect(entry.queryable.fields.map(&:name)).to eq(model.columns_hash.keys.sort)
+    expect(entry.queryable.authorization).to eq(:required)
     expect(entry.knowledge.exposed_attributes).to eq(["name"])
     expect(entry.knowledge.hidden_attributes).to eq(["email"])
   end
@@ -94,14 +95,13 @@ RSpec.describe Maglev::Registry do
       model.maglev_resource(:closed_products) { queryable { field :missing } }
     end.to raise_error(Maglev::ConfigurationError, /Unknown queryable field/)
 
-    expect do
-      model.maglev_resource(:closed_products) {
-        queryable {
-          field :name
-          prohibit :name
-        }
+    model.maglev_resource(:closed_products) {
+      queryable {
+        field :name
+        prohibit :name
       }
-    end.to raise_error(Maglev::ConfigurationError, /cannot be prohibited/)
+    }
+    expect(described_class.fetch(:closed_products).queryable.fields).to be_empty
 
     expect do
       model.maglev_resource(:closed_products) { queryable { association :missing, resource: :anything } }
@@ -116,8 +116,21 @@ RSpec.describe Maglev::Registry do
     end.to raise_error(Maglev::ConfigurationError, /Unknown aggregate field/)
 
     expect do
+      model.maglev_resource(:closed_products) { queryable { aggregates sum: [:name] } }
+    end.to raise_error(Maglev::ConfigurationError, /Aggregate sum is incompatible/)
+
+    expect do
       model.maglev_resource(:closed_products) { knowledge { expose_attached :missing } }
     end.to raise_error(Maglev::ConfigurationError, /Unknown attached knowledge source/)
+
+    expect do
+      model.maglev_resource(:closed_products) { knowledge { expose_rich_text :missing } }
+    end.to raise_error(Maglev::ConfigurationError, /Unknown rich text knowledge source/)
+
+    model.has_one :rich_text_missing, class_name: "ProductVariant", foreign_key: :product_id
+    expect do
+      model.maglev_resource(:closed_products) { knowledge { expose_rich_text :missing } }
+    end.to raise_error(Maglev::ConfigurationError, /Unknown rich text knowledge source/)
   end
 
   it "rejects unsupported scope parameter types at registration" do

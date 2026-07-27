@@ -180,7 +180,9 @@ RSpec.describe "ActiveStorage and ActionText knowledge" do
 
     retrieval = ContentCustomer.retrieve("risk", limit: 1, chunks_per_owner: 3)
     search_result = retrieval.selected.first
-    answer = ContentCustomer.ask("What sources mention risk?", limit: 1, chunks_per_owner: 4)
+    answer = Maglev::Answerer.new(ContentCustomer).ask(
+      "What sources mention risk?", limit: 1, chunks_per_owner: 4
+    )
 
     expect(search_result.content).to include("contracts[blob:")
     expect(retrieval.considered.map(&:content).join("\n")).to include("rich_text.notes.text: Visible note")

@@ -43,12 +43,17 @@ module Maglev
                 t.string :owner_type, null: false
                 t.bigint :owner_id, null: false
                 t.string :owner_model_name, null: false
+                t.string :resource_identifier, null: false
+                t.string :representation_version, null: false
+                t.string :knowledge_policy_digest, limit: 64, null: false
+                t.string :generation
                 t.string :source, null: false
                 t.string :source_identity, null: false
                 t.string :source_type, null: false
                 t.string :tenant_id
                 t.integer :chunk_index, null: false
                 t.text :content, null: false
+                t.jsonb :context, null: false, default: {}
                 t.string :content_checksum, null: false
                 t.string :embedding_model, null: false
                 t.string :index_version, limit: 64, null: false
@@ -56,9 +61,10 @@ module Maglev
                 t.timestamps
               end
 
-              add_index :maglev_chunks, [:owner_type, :owner_id, :source, :chunk_index], unique: true, name: "index_maglev_chunks_on_owner_source_chunk"
+              add_index :maglev_chunks, [:generation, :owner_type, :owner_id, :source, :chunk_index], unique: true, name: "index_maglev_chunks_on_generation_owner_source_chunk"
               add_index :maglev_chunks, :owner_model_name
-              add_index :maglev_chunks, [:owner_model_name, :owner_id, :source_type, :index_version], name: "index_maglev_chunks_for_filtered_retrieval"
+              add_index :maglev_chunks, [:resource_identifier, :owner_id, :source_type, :index_version], name: "index_maglev_chunks_for_filtered_retrieval"
+              add_index :maglev_chunks, [:generation, :resource_identifier, :owner_id, :source_type, :index_version], name: "index_maglev_chunks_for_generation_retrieval"
               add_index :maglev_chunks, :tenant_id
               add_index :maglev_chunks, :embedding, using: :hnsw, opclass: :vector_cosine_ops
 
@@ -75,6 +81,24 @@ module Maglev
                 t.timestamps
               end
               add_index :maglev_index_states, [:owner_type, :owner_id], unique: true
+
+              create_table :maglev_index_generations do |t|
+                t.string :generation, null: false
+                t.string :status, null: false
+                t.string :representation_version, null: false
+                t.jsonb :manifest, null: false, default: {}
+                t.integer :expected_record_count, null: false
+                t.integer :indexed_record_count, null: false, default: 0
+                t.string :failure_class
+                t.datetime :started_at, null: false
+                t.datetime :completed_at
+                t.datetime :activated_at
+                t.datetime :failed_at
+                t.timestamps
+              end
+              add_index :maglev_index_generations, :generation, unique: true
+              add_index :maglev_index_generations, :status, unique: true,
+                where: "status = 'active'", name: "index_maglev_index_generations_on_single_active"
             end
           end
         RUBY

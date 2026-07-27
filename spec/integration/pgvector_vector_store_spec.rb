@@ -29,6 +29,7 @@ RSpec.describe "Pgvector vector store adapter" do
       t.string :content_checksum, null: false
       t.string :embedding_model, null: false
       t.string :index_version, limit: 64, null: false
+      t.string :generation
       t.vector :embedding, limit: 2, null: false
       t.timestamps
     end
@@ -91,6 +92,26 @@ RSpec.describe "Pgvector vector store adapter" do
     store.replace_owner(owner_type: "PgvectorStoreOwner", owner_id: owner.id, documents: replacement)
 
     expect(store.fetch(ids: old.map(&:id)).map(&:content)).to eq(["final"])
+  end
+
+  it "replaces a candidate generation without changing the active generation" do
+    owner = PgvectorStoreOwner.create!(name: "Acme")
+    store = Maglev::VectorStores::Pgvector.new
+    active = document_for(owner, content: "active", checksum: "active", embedding: [1.0, 0.0], generation: "active")
+    candidate = document_for(owner, content: "candidate", checksum: "candidate", embedding: [1.0, 0.0], generation: "candidate")
+    store.upsert(documents: [active])
+
+    store.replace_owner(
+      owner_type: "PgvectorStoreOwner",
+      owner_id: owner.id,
+      generation: "candidate",
+      documents: [candidate]
+    )
+
+    expect(store.search(vector: [1.0, 0.0], filters: {generation: "active"}, limit: 10).map(&:content))
+      .to eq(["active"])
+    expect(store.search(vector: [1.0, 0.0], filters: {generation: "candidate"}, limit: 10).map(&:content))
+      .to eq(["candidate"])
   end
 
   it "linearizes concurrent replacements for the same owner" do
@@ -223,7 +244,7 @@ RSpec.describe "Pgvector vector store adapter" do
     expect(store.fetch(ids: [document.id])).to be_empty
   end
 
-  def document_for(owner, content:, checksum:, embedding:, chunk_index: 0)
+  def document_for(owner, content:, checksum:, embedding:, chunk_index: 0, generation: nil)
     Maglev::VectorStores::Document.new(
       owner_type: "PgvectorStoreOwner",
       owner_id: owner.id,
@@ -235,7 +256,8 @@ RSpec.describe "Pgvector vector store adapter" do
       content_checksum: checksum,
       embedding_model: "fake",
       index_version: "a" * 64,
-      embedding: embedding
+      embedding: embedding,
+      generation: generation
     )
   end
 

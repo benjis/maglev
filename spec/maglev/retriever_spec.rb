@@ -12,6 +12,12 @@ class FakeSearchOwner
   def self.all
     FakeAuthorizedScope.new
   end
+
+  def self.attribute_names = %w[id name]
+
+  def self.maglev_config
+    @maglev_config ||= Maglev::KnowledgeConfig.build(self) { content :name }
+  end
 end
 
 class FakeAuthorizedScope
@@ -146,6 +152,10 @@ class MaliciousV2Store < DuplicateOwnerVectorStore
   def contract_version = 2
 end
 
+class MaliciousV3Store < DuplicateOwnerVectorStore
+  def contract_version = 3
+end
+
 class IdentityCaptureVectorStore
   attr_reader :documents, :filters
 
@@ -170,6 +180,11 @@ class IdentitySearchRecord
   attr_reader :id
 
   def self.name = "IdentitySearchRecord"
+  def self.attribute_names = %w[id name]
+
+  def self.maglev_config
+    @maglev_config ||= Maglev::KnowledgeConfig.build(self) { content :name }
+  end
 
   def initialize(id)
     @id = id
@@ -200,7 +215,7 @@ RSpec.describe Maglev::Retriever do
     results = described_class.new(FakeSearchOwner, chunk_model: chunk_model, embedding_adapter: adapter).search("support", limit: 2)
 
     expect(adapter.calls).to eq(["support"])
-    expect(chunk_model.conditions).to eq([{owner_model_name: "FakeSearchOwner", index_version: current_index_version(adapter)}])
+    expect(chunk_model.conditions).to eq([current_identity_conditions(adapter)])
     expect(results.map(&:owner)).to eq(["customer-1", "customer-2"])
     expect(results.map(&:content)).to eq(%w[first second])
     expect(results.first.similarity).to eq(0.9)
@@ -217,7 +232,7 @@ RSpec.describe Maglev::Retriever do
       .search("support", limit: 2, owner: owner)
 
     expect(chunk_model.conditions).to eq([
-      {owner_model_name: "FakeSearchOwner", index_version: current_index_version(FakeQueryEmbeddingAdapter.new)},
+      current_identity_conditions(FakeQueryEmbeddingAdapter.new),
       {owner: owner}
     ])
     expect(results.map(&:content)).to eq(%w[first second])
@@ -591,6 +606,37 @@ RSpec.describe Maglev::Retriever do
     expect(result.selected).to be_empty
   end
 
+  it "rejects incompatible v0.2 identity metadata even when a v3 store ignores filters" do
+    owner = FakeSearchOwner.new
+    owner.define_singleton_method(:id) { 1 }
+    identity = current_identity(FakeQueryEmbeddingAdapter.new)
+    document = Maglev::VectorStores::Document.new(
+      owner_type: "FakeSearchOwner",
+      owner_id: 1,
+      owner_model_name: "FakeSearchOwner",
+      owner: owner,
+      source: "snapshot",
+      chunk_index: 0,
+      content: "legacy",
+      content_checksum: "x",
+      embedding_model: "fake",
+      index_version: "v2-legacy",
+      resource_identifier: identity.resource_identifier,
+      representation_version: "maglev-knowledge-v0.2",
+      knowledge_policy_digest: identity.knowledge_policy_digest,
+      embedding: [0.1, 0.2, 0.3],
+      distance: 0.1
+    )
+
+    outcome = described_class.new(
+      FakeSearchOwner,
+      vector_store: MaliciousV3Store.new([document]),
+      embedding_adapter: FakeQueryEmbeddingAdapter.new
+    ).retrieval_outcome("support", limit: 1)
+
+    expect(outcome.results).to be_empty
+  end
+
   it "fills selected owners from accepted custom-store candidates after threshold rejection" do
     store = DuplicateOwnerVectorStore.new([
       FakeSearchRow.new("rejected-owner", "too far", "snapshot", 0.8),
@@ -619,16 +665,32 @@ RSpec.describe Maglev::Retriever do
     ).search("support", limit: 2, user: :current_user)
 
     expect(chunk_model.conditions).to eq([
-      {owner_model_name: "FakeSearchOwner", index_version: current_index_version(FakeQueryEmbeddingAdapter.new)},
+      current_identity_conditions(FakeQueryEmbeddingAdapter.new),
       {owner_id: "authorized-owner-ids"}
     ])
   end
 
   def current_index_version(adapter)
-    Maglev::IndexIdentity.new(
+    current_identity(adapter).to_s
+  end
+
+  def current_identity_conditions(adapter)
+    identity = current_identity(adapter)
+    {
+      owner_model_name: "FakeSearchOwner",
+      resource_identifier: identity.resource_identifier,
+      representation_version: identity.representation_version,
+      knowledge_policy_digest: identity.knowledge_policy_digest,
+      index_version: identity.to_s
+    }
+  end
+
+  def current_identity(adapter)
+    Maglev::IndexIdentity.for(
+      model_class: FakeSearchOwner,
       configuration: Maglev.configuration,
       adapter: adapter,
       chunk_size: Maglev.configuration.chunk_size
-    ).to_s
+    )
   end
 end

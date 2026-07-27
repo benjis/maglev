@@ -8,8 +8,12 @@ RSpec.describe Maglev::QueryValidator do
     Maglev::SchemaSnapshot::Resource.new(
       identifier: "customers", description: nil, synonyms: [], table_name: "customers", primary_key: "id",
       sti_base: "customers", inheritance_column: "type",
-      fields: [Maglev::SchemaSnapshot::Field.new(name: "name", type: :string, null: false, enum_values: [], description: nil, synonyms: [])],
-      associations: [], scopes: [], aggregates: {}, limits: {}, allow_unscoped_model_queries: false
+      fields: [
+        Maglev::SchemaSnapshot::Field.new(name: "name", type: :string, null: false, enum_values: [], description: nil, synonyms: []),
+        Maglev::SchemaSnapshot::Field.new(name: "lifetime_value", type: :decimal, null: false, enum_values: [], description: nil, synonyms: [])
+      ],
+      associations: [], scopes: [], aggregates: {sum: ["lifetime_value"]}, limits: {},
+      allow_unscoped_model_queries: false
     )
   end
   let(:orders) do
@@ -25,6 +29,7 @@ RSpec.describe Maglev::QueryValidator do
       associations: [Maglev::SchemaSnapshot::Association.new(name: "customer", resource: "customers", macro: :belongs_to, polymorphic: false, description: nil, synonyms: [])],
       scopes: [{name: "placed_during", description: nil, parameters: {"from" => {type: :date, required: true, nullable: false, enum_values: [], minimum: nil, maximum: nil}}}],
       aggregates: {count: true, sum: ["total"], average: ["total"], minimum: ["total"], maximum: ["total"]},
+      grouping: ["status", "created_at"],
       limits: {rows: 50, operations: 30, joins: 2}, allow_unscoped_model_queries: false
     )
   end
@@ -32,7 +37,7 @@ RSpec.describe Maglev::QueryValidator do
   let(:validator) { described_class.new(snapshot: snapshot, root: :orders) }
   let(:input) do
     {
-      "version" => 1, "root" => "orders", "operation" => "records",
+      "version" => 2, "root" => "orders", "operation" => "records",
       "scopes" => [{"name" => "placed_during", "parameters" => {"from" => "2026-07-01"}}],
       "filters" => [{"field" => "status", "operator" => "eq", "value" => "paid"}],
       "joins" => ["customer"], "sort" => [{"field" => "created_at", "direction" => "desc"}],
@@ -65,6 +70,41 @@ RSpec.describe Maglev::QueryValidator do
     expect(result.ir.filters.last.value).to be_a(Maglev::QueryIR::RelativeTime)
   end
 
+  it "validates association grouping against the target policy and fixed temporal buckets" do
+    customer_with_grouping = customer.dup
+    customer_with_grouping.grouping = ["name"].freeze
+    customer_with_grouping.freeze
+    validator = described_class.new(
+      snapshot: Maglev::SchemaSnapshot.new(resources: [orders, customer_with_grouping],
+        paths: ["orders.customer"]),
+      root: :orders
+    )
+    candidate = input.merge(
+      "operation" => "aggregate",
+      "aggregate" => {"function" => "count", "label" => "count"},
+      "group_by" => [
+        {"field" => "customer.name", "label" => "customer"},
+        {"field" => "created_at", "label" => "month", "bucket" => "month"}
+      ]
+    )
+
+    result = validator.call(candidate)
+
+    expect(result).to be_valid
+    expect(result.ir.group_by.last).to have_attributes(bucket: :month)
+    expect(Maglev::QueryIR.from_json(result.ir.to_json).to_h).to eq(result.ir.to_h)
+  end
+
+  it "validates association aggregates against the target aggregate policy" do
+    candidate = input.merge(
+      "operation" => "aggregate",
+      "aggregate" => {"function" => "sum", "field" => "customer.lifetime_value", "label" => "value"},
+      "group_by" => []
+    )
+
+    expect(validator.call(candidate)).to be_valid
+  end
+
   it "fails closed for unknown keys, hostile fragments, model switching, bad enums, and ambiguous times" do
     attacks = [
       input.merge("sql" => "DROP TABLE orders"),
@@ -88,6 +128,8 @@ RSpec.describe Maglev::QueryValidator do
       input.merge("filters" => [{"field" => "total", "operator" => "is_null"}]),
       input.merge("scopes" => [{"name" => "missing", "parameters" => {}}]),
       input.merge("operation" => "aggregate", "aggregate" => {"function" => "maximum", "field" => "status"}),
+      input.merge("operation" => "aggregate", "aggregate" => {"function" => "count", "label" => "status"},
+        "group_by" => [{"field" => "status", "label" => "status"}]),
       input.merge("limit" => 51),
       input.merge("joins" => %w[customer customer customer])
     ]
@@ -119,7 +161,7 @@ RSpec.describe Maglev::QueryValidator do
   end
 
   it "rejects malformed and non-JSON input without raising or querying a provider/database" do
-    [nil, [], {version: 1}, {"version" => Float::INFINITY}, {"version" => 1, "root" => "orders", "operation" => "records", "filters" => [Object.new]}].each do |value|
+    [nil, [], {version: 1}, {"version" => Float::INFINITY}, {"version" => 2, "root" => "orders", "operation" => "records", "filters" => [Object.new]}].each do |value|
       expect { expect(validator.call(value)).not_to be_valid }.not_to raise_error
     end
   end

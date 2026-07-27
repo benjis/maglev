@@ -26,7 +26,9 @@ namespace :maglev do
         end
       end
     end
-    forbidden = files.grep(%r{(?:^|/)(?:tmp|log|spec)/|AGENTS|IMPLEMENTATION_PLAN|TODO|local_secret})
+    forbidden = files.grep(
+      %r{(?:^|/)(?:tmp|log|spec|specifications|\.scratch)/|AGENTS|IMPLEMENTATION_PLAN|TODO|local_secret}
+    )
     raise "forbidden packaged files: #{forbidden.join(", ")}" if forbidden.any?
 
     puts "Release audit passed: #{specification.name} #{specification.version} (#{files.size} files)"

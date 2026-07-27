@@ -3,7 +3,7 @@
 module Maglev
   class Result
     STATUSES = %i[succeeded clarification_required unsupported failed].freeze
-    KINDS = %i[relation scalar aggregate semantic_matches rag_answer hybrid_answer none].freeze
+    KINDS = %i[relation scalar aggregate table semantic_matches rag_answer hybrid_answer none].freeze
 
     attr_reader :status, :route, :kind, :value, :evidence, :warnings, :trace_id,
       :confidence, :reasons, :metadata

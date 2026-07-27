@@ -1,6 +1,6 @@
 {
   "query_ir": {
-    "version": 1,
+    "version": 2,
     "root": "orders",
     "operation": "records",
     "scopes": [
@@ -27,7 +27,8 @@
       }
     ],
     "distinct": false,
-    "limit": 25
+    "limit": 25,
+    "group_by": []
   },
   "plan_statuses": [
     "ready",
@@ -45,6 +46,7 @@
     "relation",
     "scalar",
     "aggregate",
+    "table",
     "rag_answer",
     "hybrid_answer",
     "none"

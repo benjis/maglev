@@ -302,7 +302,8 @@ RSpec.describe Maglev::Indexer do
     configuration = Maglev.configuration
     original_dimensions = configuration.embedding_dimensions
     configuration.embedding_dimensions = dimensions
-    Maglev::IndexIdentity.new(
+    Maglev::IndexIdentity.for(
+      model_class: FakeIndexedRecord,
       configuration: configuration,
       adapter: adapter,
       chunk_size: chunk_size

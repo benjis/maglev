@@ -6,6 +6,10 @@ require "maglev/retriever"
 
 class PgvectorSearchOwner < ActiveRecord::Base
   self.table_name = "pgvector_search_owners"
+
+  def self.maglev_config
+    @maglev_config ||= Maglev::KnowledgeConfig.build(self) { content :name }
+  end
 end
 
 class FixedPgvectorEmbeddingAdapter
@@ -61,7 +65,8 @@ RSpec.describe "pgvector semantic search" do
 
   it "executes a nearest-neighbor query and returns typed results" do
     adapter = FixedPgvectorEmbeddingAdapter.new([1.0, 0.0, 0.0])
-    current_version = Maglev::IndexIdentity.new(
+    current_version = Maglev::IndexIdentity.for(
+      model_class: PgvectorSearchOwner,
       configuration: Maglev.configuration,
       adapter: adapter,
       chunk_size: Maglev.configuration.chunk_size
@@ -154,7 +159,8 @@ RSpec.describe "pgvector semantic search" do
   end
 
   def current_version(adapter)
-    Maglev::IndexIdentity.new(
+    Maglev::IndexIdentity.for(
+      model_class: PgvectorSearchOwner,
       configuration: Maglev.configuration,
       adapter: adapter,
       chunk_size: Maglev.configuration.chunk_size

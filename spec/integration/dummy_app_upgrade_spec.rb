@@ -3,6 +3,7 @@
 require "rails_helper"
 require "rake"
 require_relative "../dummy/db/migrate/20260719000100_add_source_identity_to_maglev_chunks"
+require_relative "../dummy/db/migrate/20260727000100_add_context_to_maglev_chunks"
 
 Rake::Task.define_task(:environment) unless Rake::Task.task_defined?(:environment)
 load File.expand_path("../../lib/tasks/maglev.rake", __dir__) unless Rake::Task.task_defined?("maglev:reindex")
@@ -15,24 +16,35 @@ RSpec.describe "Maglev dummy-app upgrade" do
       stub_const("UpgradeProduct", Class.new(ActiveRecord::Base) do
         self.table_name = "upgrade_products"
         maglev_resource :upgrade_products do
-          knowledge { expose :name }
+          knowledge do
+            content :name
+            context :industry
+          end
         end
       end)
-      product = UpgradeProduct.create!(name: "Battery")
+      product = UpgradeProduct.create!(name: "Battery", industry: "Energy")
       configure_embeddings
       migration = AddSourceIdentityToMaglevChunks.new
+      context_migration = AddContextToMaglevChunks.new
 
       migration.migrate(:up)
+      context_migration.migrate(:up)
       Maglev::Chunk.reset_column_information
       Maglev::IndexState.reset_column_information
       Rake::Task["maglev:reindex"].reenable
       Rake::Task["maglev:reindex"].invoke("UpgradeProduct")
 
       chunk = Maglev::Chunk.find_by!(owner_type: "UpgradeProduct", owner_id: product.id)
-      expect(chunk).to have_attributes(source_identity: "name", source_type: "attribute")
+      expect(chunk).to have_attributes(
+        source_identity: "name",
+        source_type: "attribute",
+        context: {"industry" => "Energy"}
+      )
       expect(product.maglev_index_status).to have_attributes(status: :ready, chunk_count: 1)
 
+      context_migration.migrate(:down)
       migration.migrate(:down)
+      expect(connection.column_exists?(:maglev_chunks, :context)).to be(false)
       expect(connection.column_exists?(:maglev_chunks, :source_identity)).to be(false)
       expect(connection.table_exists?(:maglev_index_states)).to be(false)
       raise ActiveRecord::Rollback
@@ -59,6 +71,7 @@ RSpec.describe "Maglev dummy-app upgrade" do
     end
     connection.create_table(:upgrade_products, force: true) do |t|
       t.string :name
+      t.string :industry
       t.timestamps
     end
     Maglev::Chunk.reset_column_information

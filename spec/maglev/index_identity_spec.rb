@@ -17,19 +17,62 @@ RSpec.describe Maglev::IndexIdentity do
     Maglev::Configuration.new
   end
 
-  def fingerprint(configuration: self.configuration, adapter: VersionedEmbeddingAdapter.new, chunk_size: 1000)
-    described_class.new(configuration: configuration, adapter: adapter, chunk_size: chunk_size).to_s
+  def knowledge_config(content: %w[name], context: %w[industry])
+    Struct.new(
+      :content_attributes,
+      :context_attributes,
+      :prohibited_attributes,
+      :tags,
+      :relations,
+      :attached_sources,
+      :rich_text_sources
+    ).new(content, context, %w[private_note], %w[commercial], [], [], [])
   end
 
-  it "hashes the exact versioned payload in its fixed field order" do
-    expect(fingerprint).to eq("72e3dde21998f405f9d59e3f1d3e1b75f7744bffc92141c5a653e71688af5f57")
+  def fingerprint(configuration: self.configuration, adapter: VersionedEmbeddingAdapter.new, chunk_size: 1000,
+    resource_identifier: "customers", knowledge_config: self.knowledge_config)
+    described_class.new(
+      configuration: configuration,
+      adapter: adapter,
+      chunk_size: chunk_size,
+      resource_identifier: resource_identifier,
+      knowledge_config: knowledge_config
+    ).to_s
+  end
+
+  it "identifies the v0.3 representation explicitly" do
+    identity = described_class.new(
+      configuration: configuration,
+      adapter: VersionedEmbeddingAdapter.new,
+      chunk_size: 1000,
+      resource_identifier: "customers",
+      knowledge_config: knowledge_config
+    )
+
+    expect(identity.representation_version).to eq("maglev-knowledge-v0.3")
+    expect(identity.to_s).to match(/\Av3-[0-9a-f]{61}\z/)
   end
 
   it "does not allow callers to override the chunking algorithm version" do
     keyword_parameters = described_class.instance_method(:initialize).parameters
       .filter_map { |type, name| name if type == :key || type == :keyreq }
 
-    expect(keyword_parameters).to contain_exactly(:configuration, :adapter, :chunk_size)
+    expect(keyword_parameters).to contain_exactly(
+      :configuration,
+      :adapter,
+      :chunk_size,
+      :resource_identifier,
+      :knowledge_config
+    )
+  end
+
+  it "changes across resources and knowledge declarations but is stable for identical policy" do
+    identical = knowledge_config
+    changed_policy = knowledge_config(content: %w[name description])
+
+    expect(fingerprint(knowledge_config: identical)).to eq(fingerprint(knowledge_config: identical))
+    expect(fingerprint(resource_identifier: "accounts")).not_to eq(fingerprint)
+    expect(fingerprint(knowledge_config: changed_policy)).not_to eq(fingerprint)
   end
 
   it "changes when the embedding model changes" do

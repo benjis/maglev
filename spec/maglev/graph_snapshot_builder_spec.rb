@@ -20,14 +20,15 @@ class GraphSnapshotCustomer
 end
 
 class GraphSnapshotTicket
-  attr_accessor :id, :subject, :customer
+  attr_accessor :id, :subject, :status, :customer
 
   def self.name = "GraphSnapshotTicket"
-  def self.attribute_names = %w[id subject]
+  def self.attribute_names = %w[id subject status]
 
   def self.maglev_config
     @maglev_config ||= Maglev::KnowledgeConfig.build(self) do
       expose :subject
+      context :status
       include_related :customer, depth: 1, limit: 1, inverse: :tickets
     end
   end
@@ -115,6 +116,27 @@ RSpec.describe Maglev::SnapshotBuilder do
       include(kind: :related_record, path: "tickets[0]", original_characters: be > 35, retained_characters: 35)
     )
     expect(snapshot.to_s).not_to include("Urgent renewal risk")
+  end
+
+  it "retains attributed context and diagnostics from related records" do
+    customer = GraphSnapshotCustomer.new
+    customer.id = 1
+    customer.name = "Acme"
+    ticket = GraphSnapshotTicket.new
+    ticket.id = 10
+    ticket.subject = ["unsupported"]
+    ticket.status = "open"
+    customer.tickets = [ticket]
+    customer.account = nil
+
+    snapshot = described_class.new(customer, GraphSnapshotCustomer.maglev_config).build
+
+    expect(snapshot.metadata[:knowledge_context]).to include("tickets[0].status" => "open")
+    expect(snapshot.metadata[:diagnostics]).to include(
+      field: "tickets[0].subject",
+      role: :content,
+      reason: :unsupported
+    )
   end
 
   it "terminates cycles through visited-record protection" do

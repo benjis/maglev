@@ -17,9 +17,9 @@ RSpec.describe Maglev::Planner do
   let(:snapshot) { Maglev::SchemaSnapshot.new(resources: [resource], paths: []) }
   let(:valid_ir) do
     {
-      "version" => 1, "root" => "orders", "operation" => "records", "scopes" => [],
+      "version" => 2, "root" => "orders", "operation" => "records", "scopes" => [],
       "filters" => [{"field" => "status", "operator" => "eq", "value" => "paid"}],
-      "joins" => [], "sort" => [], "distinct" => false, "limit" => 5
+      "joins" => [], "sort" => [], "distinct" => false, "limit" => 5, "group_by" => []
     }
   end
 
@@ -39,8 +39,8 @@ RSpec.describe Maglev::Planner do
     expect(plan.route).to eq(:structured)
     expect(plan.ir.to_h).to eq(valid_ir)
     expect(plan.explanation).to include("status eq")
-    expect(plan.policy_limits).to eq(rows: 5, operations: 30, joins: 2, complexity: 100)
-    expect(plan.evidence_requirements).to eq(kind: :records, max_rows: 5)
+    expect(plan.policy_limits).to eq(rows: 5, groups: 100, operations: 30, joins: 2, complexity: 100)
+    expect(plan.evidence_requirements).to eq(kind: :records, max_rows: 5, max_groups: 100)
     expect(plan).to be_frozen
     expect(sql).to be_empty
     expect(adapter.requests.first).to include(question: "Which orders are paid?", schema_snapshot: snapshot)
