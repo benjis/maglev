@@ -22,13 +22,20 @@ module Maglev
     STATUSES = %i[answered clarification_required unsupported partial failed].freeze
 
     attr_reader :status, :answer, :evidence, :findings, :inferences, :recommendations,
-      :assumptions, :limitations, :warnings, :trace_id, :clarification, :continuation
+      :assumptions, :limitations, :warnings, :trace_id, :clarification, :continuation,
+      :semantic_grounding
 
     def initialize(status:, trace_id:, answer: nil, evidence: nil, findings: [], inferences: [],
       recommendations: [], assumptions: [], limitations: [], warnings: [], clarification: nil,
-      continuation: nil)
+      continuation: nil, semantic_grounding: nil)
       raise ArgumentError, "invalid business outcome status" unless STATUSES.include?(status)
       raise ArgumentError, "only answered outcomes may carry an answer" if status != :answered && !answer.nil?
+      unless semantic_grounding.nil? || semantic_grounding.is_a?(SemanticGrounding)
+        raise ArgumentError, "semantic_grounding must be a SemanticGrounding"
+      end
+      if status == :failed && semantic_grounding && !semantic_grounding.minimal?
+        raise ArgumentError, "failed outcome may expose only minimal semantic grounding"
+      end
 
       @status = status
       @answer = answer&.to_s&.freeze
@@ -42,6 +49,7 @@ module Maglev
       @trace_id = trace_id.to_s.freeze
       @clarification = clarification&.freeze
       @continuation = continuation&.to_s&.freeze
+      @semantic_grounding = semantic_grounding
       freeze
     end
   end

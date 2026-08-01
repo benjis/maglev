@@ -2,7 +2,7 @@
 
 module Maglev
   class ResourceSelectorAdapter
-    def select(question:, catalog:)
+    def select(question:, catalog:, semantic_context: nil)
       raise NotImplementedError, "#{self.class.name} must implement #select"
     end
   end

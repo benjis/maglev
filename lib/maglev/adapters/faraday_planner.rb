@@ -21,12 +21,13 @@ module Maglev
         @client = FaradayClient.new(@provider, connection: connection)
       end
 
-      def plan(question:, schema_snapshot:, constraints:, query_ir_schema:, planning_facts: {}, repair: nil)
+      def plan(question:, schema_snapshot:, constraints:, query_ir_schema:, planning_facts: {}, repair: nil,
+        semantic_context: nil)
         question = question.to_s
         raise ArgumentError, "question exceeds planner limit" if question.bytesize > MAX_QUESTION_BYTES
 
         response = @client.post("chat/completions", payload(question, schema_snapshot, constraints,
-          planning_facts, query_ir_schema, repair))
+          planning_facts, query_ir_schema, repair, semantic_context))
         content = response.dig("choices", 0, "message", "content")
         raise PermanentProviderError, "Planner provider returned invalid structured output" unless content.is_a?(String)
 
@@ -35,12 +36,12 @@ module Maglev
         raise PermanentProviderError, "Planner provider returned invalid structured output"
       end
 
-      def business_plan(question:, schema_snapshot:, limits:, plan_schema:, planning_facts: {})
+      def business_plan(question:, schema_snapshot:, limits:, plan_schema:, planning_facts: {}, semantic_context: nil)
         question = question.to_s
         raise ArgumentError, "question exceeds planner limit" if question.bytesize > MAX_QUESTION_BYTES
 
         response = @client.post("chat/completions",
-          business_payload(question, schema_snapshot, limits, planning_facts, plan_schema))
+          business_payload(question, schema_snapshot, limits, planning_facts, plan_schema, semantic_context))
         content = response.dig("choices", 0, "message", "content")
         raise PermanentProviderError, "Planner provider returned invalid structured output" unless content.is_a?(String)
 
@@ -51,7 +52,7 @@ module Maglev
 
       private
 
-      def business_payload(question, snapshot, limits, planning_facts, plan_schema)
+      def business_payload(question, snapshot, limits, planning_facts, plan_schema, semantic_context)
         {
           model: @provider.model,
           messages: [
@@ -66,8 +67,9 @@ module Maglev
                 "Question: #{question}",
                 "Authorized schema: #{snapshot.to_json}",
                 "Plan limits: #{JSON.generate(limits)}",
-                "Authorized planning facts: #{JSON.generate(planning_facts)}"
-              ].join("\n")
+                "Authorized planning facts: #{JSON.generate(planning_facts)}",
+                ("Authorized semantic context: #{JSON.generate(semantic_context)}" if semantic_context)
+              ].compact.join("\n")
             }
           ],
           response_format: business_response_format(plan_schema),
@@ -84,12 +86,13 @@ module Maglev
         }
       end
 
-      def payload(question, snapshot, constraints, planning_facts, query_ir_schema, repair)
+      def payload(question, snapshot, constraints, planning_facts, query_ir_schema, repair, semantic_context)
         {
           model: @provider.model,
           messages: [
             {role: "system", content: system_prompt(query_ir_schema)},
-            {role: "user", content: user_prompt(question, snapshot, constraints, planning_facts, repair)}
+            {role: "user", content: user_prompt(question, snapshot, constraints, planning_facts, repair,
+              semantic_context)}
           ],
           response_format: response_format(query_ir_schema),
           stream: false
@@ -140,10 +143,11 @@ module Maglev
           "Query IR schema: #{JSON.generate(query_ir_schema)}"
       end
 
-      def user_prompt(question, snapshot, constraints, planning_facts, repair)
+      def user_prompt(question, snapshot, constraints, planning_facts, repair, semantic_context)
         parts = ["Question: #{question}", "Authorized schema: #{snapshot.to_json}",
           "Request constraints: #{JSON.generate(constraints)}",
           "Authorized planning facts: #{JSON.generate(planning_facts)}"]
+        parts << "Authorized semantic context: #{JSON.generate(semantic_context)}" if semantic_context
         parts << "Repair these validation errors only: #{JSON.generate(repair)}" if repair
         parts.join("\n")
       end

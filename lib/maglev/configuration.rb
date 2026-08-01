@@ -26,7 +26,7 @@ module Maglev
       :snapshot_max_characters, :snapshot_max_chunks,
       :structured_query_role, :structured_query_executor_wrapper, :planner_adapter, :audit_sink,
       :tenant_id_resolver, :policy_resolver, :resource_selector_adapter, :continuation_secret,
-      :continuation_store, :continuation_clock
+      :continuation_store, :continuation_clock, :semantic_snapshot_path
 
     def initialize
       @embedding_provider = ProviderConfiguration.new(

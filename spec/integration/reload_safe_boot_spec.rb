@@ -14,7 +14,10 @@ RSpec.describe "reload-safe dummy application boot" do
     ]
 
     output, error, status = Open3.capture3(
-      {"RAILS_ENV" => "test", "BUNDLE_GEMFILE" => File.expand_path("../../Gemfile", __dir__)},
+      {
+        "RAILS_ENV" => "test",
+        "BUNDLE_GEMFILE" => ENV.fetch("BUNDLE_GEMFILE", File.expand_path("../../Gemfile", __dir__))
+      },
       *command,
       chdir: dummy_root
     )

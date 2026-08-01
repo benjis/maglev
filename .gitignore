@@ -10,3 +10,4 @@ AGENTS.md
 .scratch/
 .ua/
 docs/
+config/maglev/semantic-layer.generated.yml

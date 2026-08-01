@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "rake"
+require "tmpdir"
 require "maglev"
 require "maglev/active_record_extension"
 
@@ -113,5 +114,72 @@ RSpec.describe "Maglev rake tasks" do
     expect do
       Rake::Task["maglev:evaluate_planner"].invoke(path)
     end.to output(/Planner evaluation v1: 12\/12 passed \(100.0%\)/).to_stdout
+  end
+
+  describe "semantic snapshot tasks" do
+    around do |example|
+      original = Maglev.configuration
+      Dir.mktmpdir("maglev-semantic-task") do |directory|
+        @semantic_root = Pathname(directory)
+        @semantic_root.join("app/models").mkpath
+        @semantic_root.join("app/models/customer.rb").write(<<~RUBY)
+          class Customer
+            semantic_term :active_customer
+          end
+        RUBY
+        configuration = Maglev::Configuration.new
+        configuration.semantic_snapshot_path = @semantic_root.join("custom/snapshot.yml")
+        Maglev.instance_variable_set(:@configuration, configuration)
+        Dir.chdir(@semantic_root) { example.run }
+      end
+    ensure
+      Maglev.instance_variable_set(:@configuration, original)
+    end
+
+    before do
+      allow(Maglev::Registry).to receive(:entries).and_return([])
+    end
+
+    def invoke_semantic_task(name)
+      task = Rake::Task["maglev:semantics:#{name}"]
+      task.reenable
+      task.invoke
+    end
+
+    it "builds reproducibly and validates without modifying the artifact" do
+      path = Maglev.configuration.semantic_snapshot_path
+
+      expect { invoke_semantic_task(:build) }.to output(/Built semantic snapshot/).to_stdout
+      first = path.binread
+      first_mtime = path.mtime
+      expect(Maglev::SemanticSnapshot.load(first).build_input_fingerprint).to start_with("sha256:")
+
+      expect { invoke_semantic_task(:build) }.to output(/Built semantic snapshot/).to_stdout
+      expect(path.binread).to eq(first)
+
+      expect { invoke_semantic_task(:validate) }.to output(/Valid semantic snapshot/).to_stdout
+      expect(path.binread).to eq(first)
+      expect(path.mtime).to be >= first_mtime
+    end
+
+    it "preserves the prior artifact when discovery fails" do
+      path = Maglev.configuration.semantic_snapshot_path
+      path.dirname.mkpath
+      path.write("previous-valid-artifact")
+      allow(Maglev::SemanticDiscovery).to receive(:new).and_raise("scan failed")
+
+      expect { invoke_semantic_task(:build) }.to raise_error("scan failed")
+      expect(path.binread).to eq("previous-valid-artifact")
+    end
+
+    it "preserves the prior artifact when atomic replacement fails" do
+      path = Maglev.configuration.semantic_snapshot_path
+      path.dirname.mkpath
+      path.write("previous-valid-artifact")
+      allow(File).to receive(:rename).and_raise(Errno::EACCES)
+
+      expect { invoke_semantic_task(:build) }.to raise_error(Errno::EACCES)
+      expect(path.binread).to eq("previous-valid-artifact")
+    end
   end
 end

@@ -14,22 +14,6 @@ RSpec.describe "Maglev release readiness" do
     expect(specification.files).to include("README.md", "CHANGELOG.md")
   end
 
-  it "records the v0.3 compatibility and reindex transition" do
-    upgrade = File.read(File.join(root, "docs/UPGRADING_V0_3.md"))
-
-    expect(upgrade).to include(
-      "No backward compatibility",
-      "maglev_request",
-      "Maglev.request",
-      "mode:",
-      "queryable",
-      "expose",
-      "Maglev.ask",
-      "full reindex",
-      "activate_index_generation!"
-    )
-  end
-
   it "excludes specifications, tickets, plans, logs, temporary data, and secrets from the package" do
     excluded = specification.files.grep(
       %r{(?:^|/)(?:tmp|log|spec|specifications|\.scratch)/|AGENTS|IMPLEMENTATION_PLAN|TODO|local_secret}

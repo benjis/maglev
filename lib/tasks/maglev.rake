@@ -1,6 +1,28 @@
 # frozen_string_literal: true
 
 namespace :maglev do
+  namespace :semantics do
+    def semantic_snapshot_builder
+      root = (defined?(Rails) && Rails.respond_to?(:root) && Rails.root) ? Rails.root : Dir.pwd
+      path = Maglev.configuration.semantic_snapshot_path
+      Maglev::SemanticSnapshotBuilder.new(root: root, output_path: path)
+    end
+
+    desc "Build and atomically publish the local semantic snapshot"
+    task build: :environment do
+      snapshot = semantic_snapshot_builder.build
+      puts "Built semantic snapshot: #{semantic_snapshot_builder.output_path} " \
+        "(#{snapshot.build_input_fingerprint})"
+    end
+
+    desc "Validate the configured local semantic snapshot without changing it"
+    task validate: :environment do
+      snapshot = semantic_snapshot_builder.validate
+      puts "Valid semantic snapshot: #{semantic_snapshot_builder.output_path} " \
+        "(#{snapshot.build_input_fingerprint})"
+    end
+  end
+
   desc "Inspect a built gem before release: rake maglev:release_audit[path]"
   task :release_audit, [:path] do |_task, args|
     require "rubygems/package"

@@ -19,13 +19,25 @@ module Maglev
     def ask(question, user:, context:, continuation: nil)
       trace_id = nil
       authorized = resolve_authorized_resources(user, context)
+      semantic_context = authorized_semantic_context(authorized)
       binding = continuation_binding(user, context, authorized)
       if continuation
         question, selection = ContinuationToken.new.consume(continuation, binding: binding) do |state|
           resume_clarification(question, state, authorized)
         end
+        if selection.nil?
+          semantic = interpret_semantics(question, semantic_context, binding)
+          return semantic if semantic.is_a?(BusinessOutcome)
+          return execute_semantic_ir(semantic, authorized, semantic_context) if semantic&.status == :compiled
+
+          selection = select_resources(question, authorized, binding: binding, semantic_context: semantic_context)
+        end
       else
-        selection = select_resources(question, authorized, binding: binding)
+        semantic = interpret_semantics(question, semantic_context, binding)
+        return semantic if semantic.is_a?(BusinessOutcome)
+        return execute_semantic_ir(semantic, authorized, semantic_context) if semantic&.status == :compiled
+
+        selection = select_resources(question, authorized, binding: binding, semantic_context: semantic_context)
       end
       return selection if selection.is_a?(BusinessOutcome)
 
@@ -36,7 +48,7 @@ module Maglev
           resources: Maglev.configuration.selected_resource_max_count,
           bytes: Maglev.configuration.selected_schema_max_bytes
         })
-      return execute_business_plan(question, selected, snapshot) if selection.length > 1
+      return execute_business_plan(question, selected, snapshot, semantic_context) if selection.length > 1
 
       root = selected.first
       plan = Planner.new(adapter: configured_planner).plan(
@@ -44,30 +56,33 @@ module Maglev
         snapshot: snapshot,
         resource: root.fetch(:identifier),
         base_relation: root.fetch(:base_relation),
-        planning_facts: root.fetch(:planning_facts)
+        planning_facts: root.fetch(:planning_facts),
+        semantic_context: semantic_context&.provider_payload
       )
       trace_id = plan.trace_id
       if plan.status == :clarification_required
         if continuation
           return BusinessOutcome.new(status: :unsupported, trace_id: plan.trace_id,
-            warnings: ["The clarification did not resolve the ambiguity."])
+            warnings: ["The clarification did not resolve the ambiguity."],
+            semantic_grounding: semantic_grounding(semantic_context))
         end
-        return planning_clarification_outcome(plan, question, selection, binding)
+        return planning_clarification_outcome(plan, question, selection, binding, semantic_context)
       end
       result = if plan.route == :knowledge
         KnowledgeExecutor.new.execute(plan, question: question)
       else
         Maglev.execute(plan)
       end
-      outcome_for(result)
+      outcome_for(result, semantic_context)
     rescue
       BusinessOutcome.new(status: :failed, trace_id: trace_id || SecureRandom.uuid,
-        warnings: [SAFE_FAILURE_WARNING])
+        warnings: [SAFE_FAILURE_WARNING],
+        semantic_grounding: SemanticGrounding.minimal(semantic_context))
     end
 
     private
 
-    def execute_business_plan(question, selected, snapshot)
+    def execute_business_plan(question, selected, snapshot, semantic_context)
       authorized = selected.to_h do |resource|
         entry = Registry.fetch(resource.fetch(:identifier))
         [entry.identifier, {structured: !entry.queryable.nil?, knowledge: !entry.knowledge.nil?}]
@@ -76,7 +91,8 @@ module Maglev
       plan = BusinessQuestionPlanner.new(adapter: configured_planner, snapshot: snapshot,
         authorized_resources: authorized, limits: limits).plan(
           question: question,
-          planning_facts: selected.to_h { |resource| [resource.fetch(:identifier), resource.fetch(:planning_facts)] }
+          planning_facts: selected.to_h { |resource| [resource.fetch(:identifier), resource.fetch(:planning_facts)] },
+          semantic_context: semantic_context&.provider_payload
         )
       relations = selected.to_h { |resource| [resource.fetch(:identifier), resource.fetch(:base_relation)] }
       execution = BusinessQuestionPlanExecutor.new(
@@ -86,12 +102,13 @@ module Maglev
         step_timeout: Maglev.configuration.business_plan_step_timeout
       ).execute(plan)
       status = {complete: :answered, partial: :partial, failed: :failed}.fetch(execution.status)
-      synthesis = synthesize_business_outcome(question, execution)
+      synthesis = synthesize_business_outcome(question, execution, semantic_context)
       answer = synthesis[:answer] if status == :answered
       BusinessOutcome.new(status: status, answer: answer, evidence: execution.evidence,
         findings: synthesis[:findings], inferences: synthesis[:inferences],
         recommendations: synthesis[:recommendations], assumptions: synthesis[:assumptions],
-        limitations: synthesis[:limitations], trace_id: execution.trace_id)
+        limitations: synthesis[:limitations], trace_id: execution.trace_id,
+        semantic_grounding: grounding_for_status(status, semantic_context))
     end
 
     def business_plan_limits
@@ -105,7 +122,7 @@ module Maglev
       }.freeze
     end
 
-    def synthesize_business_outcome(question, execution)
+    def synthesize_business_outcome(question, execution, semantic_context)
       adapter = Maglev.configuration.outcome_synthesis_adapter
       unless adapter
         return {
@@ -114,7 +131,9 @@ module Maglev
         }
       end
 
-      BusinessOutcomeSynthesizer.new(adapter: adapter).synthesize(question: question, execution: execution)
+      BusinessOutcomeSynthesizer.new(adapter: adapter).synthesize(
+        question: question, execution: execution, semantic_context: semantic_context&.provider_payload
+      )
     end
 
     def execute_structured_step(step, snapshot, relations)
@@ -168,7 +187,7 @@ module Maglev
       authorized.to_h { |resource| [resource.fetch(:identifier), resource] }.freeze
     end
 
-    def select_resources(question, authorized, binding:)
+    def select_resources(question, authorized, binding:, semantic_context:)
       catalog = ResourceCatalog.new.build(authorized.keys)
       raise ConfigurationError, "authorized resource catalog is empty" if catalog.empty?
       return [catalog.first.fetch(:identifier)].freeze if catalog.one?
@@ -176,17 +195,19 @@ module Maglev
         raise ConfigurationError, "resource selector adapter is not configured"
       end
 
-      output = @resource_selector_adapter.select(question: question.to_s, catalog: catalog)
+      request = {question: question.to_s, catalog: catalog}
+      request[:semantic_context] = semantic_context.provider_payload if semantic_context
+      output = @resource_selector_adapter.select(**request)
       raise PermanentProviderError, "Resource selector returned invalid output" unless output.is_a?(Hash)
 
       case output["status"]
       when "selected"
         validate_selection(output["resources"], catalog, authorized)
       when "unsupported"
-        selection_outcome(:unsupported, output)
+        selection_outcome(:unsupported, output, semantic_context: semantic_context)
       when "clarification_required"
         selection_outcome(:clarification_required, output, catalog: catalog, question: question,
-          binding: binding)
+          binding: binding, semantic_context: semantic_context)
       else
         raise PermanentProviderError, "Resource selector returned invalid output"
       end
@@ -208,7 +229,7 @@ module Maglev
       identifiers.freeze
     end
 
-    def selection_outcome(status, output, catalog: nil, question: nil, binding: nil)
+    def selection_outcome(status, output, catalog: nil, question: nil, binding: nil, semantic_context: nil)
       message = output["message"]
       unless message.is_a?(String) && !message.empty? && message.bytesize <= 1_000
         raise PermanentProviderError, "Resource selector returned invalid output"
@@ -232,13 +253,71 @@ module Maglev
           "binding" => binding
         )
       end
-      BusinessOutcome.new(**attributes)
+      BusinessOutcome.new(**attributes, semantic_grounding: semantic_grounding(semantic_context))
     end
 
     def validate_planning_facts!(facts)
       unless safe_fact?(facts) && JSON.generate(facts).bytesize <= MAX_PLANNING_FACT_BYTES
         raise ConfigurationError, "planning facts must contain only bounded scalar values"
       end
+    end
+
+    def authorized_semantic_context(authorized)
+      snapshot = Maglev.semantic_snapshot
+      return unless snapshot
+
+      AuthorizedSemanticContext.new(snapshot: snapshot, authorized_resources: authorized)
+    end
+
+    def interpret_semantics(question, semantic_context, binding)
+      return unless semantic_context
+
+      interpretation = SemanticInterpreter.new(semantic_context).call(question)
+      @semantic_meaning_ids = interpretation.meaning_ids unless interpretation.status == :none
+      case interpretation.status
+      when :clarification_required
+        @semantic_contest_ids = interpretation.meaning_ids
+        clarification = {
+          message: interpretation.message.freeze,
+          choices: interpretation.choices.map(&:freeze).freeze
+        }.freeze
+        token = ContinuationToken.new.issue(
+          "stage" => "semantic",
+          "question" => question.to_s,
+          "semantic_name" => interpretation.meaning_ids.filter_map do |id|
+            semantic_context.meanings.find { |meaning| meaning.fetch(:id) == id }&.fetch(:name)
+          end.first,
+          "choices" => interpretation.choices,
+          "binding" => binding
+        )
+        BusinessOutcome.new(status: :clarification_required, trace_id: SecureRandom.uuid,
+          clarification: clarification, continuation: token,
+          semantic_grounding: semantic_grounding(semantic_context))
+      when :unsupported
+        BusinessOutcome.new(status: :unsupported, trace_id: SecureRandom.uuid,
+          warnings: [interpretation.message],
+          semantic_grounding: semantic_grounding(semantic_context))
+      else
+        interpretation
+      end
+    end
+
+    def execute_semantic_ir(interpretation, authorized, semantic_context)
+      resource = interpretation.ir.fetch("root")
+      authorization = authorized.fetch(resource)
+      snapshot = Registry.snapshot(resources: [resource],
+        authorizer: ->(*) { true },
+        limits: {
+          resources: Maglev.configuration.selected_resource_max_count,
+          bytes: Maglev.configuration.selected_schema_max_bytes
+        })
+      validation = QueryValidator.new(snapshot: snapshot, root: resource).call(interpretation.ir)
+      raise PlanValidationError, "Semantic meaning did not compile to authorized Query IR" unless validation.valid?
+
+      plan = Planner::Plan.new(status: :ready, resource: resource, ir: validation.ir,
+        explanation: validation.explanation, validation: validation,
+        base_relation: authorization.fetch(:base_relation), trace_id: SecureRandom.uuid)
+      outcome_for(Maglev.execute(plan), semantic_context)
     end
 
     def safe_fact?(value)
@@ -275,24 +354,33 @@ module Maglev
 
     def resume_clarification(answer, state, authorized)
       choices = state["choices"]
-      unless %w[selection planning].include?(state["stage"]) && choices.is_a?(Array) &&
+      unless %w[selection planning semantic].include?(state["stage"]) && choices.is_a?(Array) &&
           answer.is_a?(String) && answer.bytesize <= 200 && choices.include?(answer)
         raise ArgumentError, "invalid clarification response"
       end
 
       resources = if state["stage"] == "selection"
         [answer]
+      elsif state["stage"] == "semantic"
+        nil
       else
         state["resources"]
       end
-      unless resources.is_a?(Array) && resources.all? { |identifier| authorized.key?(identifier) }
+      valid_resources = resources.nil? ||
+        (resources.is_a?(Array) && resources.all? { |identifier| authorized.key?(identifier) })
+      unless valid_resources
         raise ArgumentError, "invalid clarification response"
       end
 
-      ["#{state.fetch("question")}\nClarification: #{answer}", resources.freeze]
+      resumed_question = if state["stage"] == "semantic"
+        "#{state.fetch("question")}\nClarification: #{answer}:#{state.fetch("semantic_name")}"
+      else
+        "#{state.fetch("question")}\nClarification: #{answer}"
+      end
+      [resumed_question, resources&.freeze]
     end
 
-    def planning_clarification_outcome(plan, question, selection, binding)
+    def planning_clarification_outcome(plan, question, selection, binding, semantic_context)
       clarification = plan.clarification
       token = ContinuationToken.new.issue(
         "stage" => "planning",
@@ -302,10 +390,11 @@ module Maglev
         "binding" => binding
       )
       BusinessOutcome.new(status: :clarification_required, trace_id: plan.trace_id,
-        clarification: clarification, continuation: token)
+        clarification: clarification, continuation: token,
+        semantic_grounding: semantic_grounding(semantic_context))
     end
 
-    def outcome_for(result)
+    def outcome_for(result, semantic_context)
       status = {
         succeeded: :answered,
         clarification_required: :clarification_required,
@@ -319,7 +408,21 @@ module Maglev
       warnings = [SAFE_FAILURE_WARNING] if status == :failed && warnings.empty?
       evidence = result.evidence if status == :answered || result.route == :knowledge
       BusinessOutcome.new(status: status, answer: answer, evidence: evidence,
-        warnings: warnings, trace_id: result.trace_id)
+        warnings: warnings, trace_id: result.trace_id,
+        semantic_grounding: grounding_for_status(status, semantic_context))
+    end
+
+    def grounding_for_status(status, semantic_context)
+      return SemanticGrounding.minimal(semantic_context) if status == :failed
+
+      semantic_grounding(semantic_context)
+    end
+
+    def semantic_grounding(semantic_context)
+      if semantic_context
+        SemanticGrounding.from(semantic_context, meaning_ids: @semantic_meaning_ids,
+          contest_ids: @semantic_contest_ids || [])
+      end
     end
   end
 

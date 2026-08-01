@@ -18,6 +18,7 @@ module Maglev
         Maglev::DependencyGraph.reset!
         Maglev::KnowledgeRegistry.rebuild!
         Maglev::Registry.rebuild!
+        Maglev::SemanticSnapshotStore.reload!
       end
     end
 

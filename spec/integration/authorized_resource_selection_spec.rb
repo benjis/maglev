@@ -96,6 +96,41 @@ RSpec.describe "authorized resource selection" do
     expect(snapshot.to_json).not_to include("selection_invoices", "selection_secrets")
   end
 
+  it "filters unregistered and unauthorized semantics before every provider payload" do
+    graph = semantic_security_graph
+    snapshot = Maglev::SemanticSnapshot.new(
+      graph: graph, generator_version: Maglev::VERSION,
+      build_input_fingerprint: "sha256:test", registry_compatibility_fingerprint: "sha256:test"
+    )
+    allow(Maglev).to receive(:semantic_snapshot).and_return(snapshot)
+    selector = Maglev::FakeResourceSelectorAdapter.new([{
+      "status" => "selected", "resources" => ["selection_orders"]
+    }])
+    Maglev.configuration.resource_selector_adapter = selector
+
+    outcome = Maglev.ask("How many orders?", user: 1, context: "en-AU")
+
+    payloads = [
+      selector.requests.fetch(0).fetch(:semantic_context),
+      Maglev.configuration.planner_adapter.requests.fetch(0).fetch(:semantic_context),
+      outcome
+    ].join(" ")
+    expect(payloads).to include("entity:sales:selection_order")
+    expect(payloads).not_to include("selection_secret", "ghost_account", "compromised")
+    expect(outcome.semantic_grounding.to_h).to include(
+      snapshot_fingerprint: "sha256:test",
+      contexts: ["sales"],
+      meanings: [{
+        id: "entity:sales:selection_order",
+        semantic_status: :observed,
+        execution_status: :available
+      }]
+    )
+    expect(outcome.semantic_grounding.to_h.to_s).not_to include(
+      "selection_secret", "ghost_account", "compromised"
+    )
+  end
+
   it "validates and executes a fixed multi-resource plan before returning bounded evidence" do
     Maglev.configuration.resource_selector_adapter = Maglev::FakeResourceSelectorAdapter.new([{
       "status" => "selected",
@@ -316,5 +351,37 @@ RSpec.describe "authorized resource selection" do
       "aggregate" => {"function" => "count"},
       "group_by" => []
     }
+  end
+
+  def semantic_security_graph
+    node = Maglev::SemanticGraph::Node
+    evidence = Maglev::SemanticGraph::Evidence
+    claim = Maglev::SemanticGraph::Claim
+    order = node.new(kind: :entity, context: :sales, name: :selection_order, execution_status: :available)
+    secret = node.new(kind: :entity, context: :security, name: :selection_secret, execution_status: :available)
+    ghost = node.new(kind: :entity, context: :internal, name: :ghost_account)
+    compromised = node.new(kind: :state, context: :security, name: :compromised)
+    order_binding = evidence.new(source_kind: :registry, stable_identity: "resource:selection_orders",
+      extractor: :registry)
+    secret_binding = evidence.new(source_kind: :registry, stable_identity: "resource:selection_secrets",
+      extractor: :registry)
+    ghost_source = evidence.new(source_kind: :reflection, stable_identity: "ruby:GhostAccount",
+      extractor: :reflection)
+    state_source = evidence.new(source_kind: :ruby, stable_identity: "ruby:SelectionSecret.compromised",
+      extractor: :prism)
+    state_edge = Maglev::SemanticGraph::Edge.new(
+      kind: :state_of, source_id: compromised.id, target_id: secret.id
+    )
+    Maglev::SemanticGraph.new(
+      nodes: [order, secret, ghost, compromised],
+      edges: [state_edge],
+      evidence: [order_binding, secret_binding, ghost_source, state_source],
+      claims: [
+        claim.new(assertion_id: order.id, evidence_id: order_binding.id, basis: :registry, polarity: :supports),
+        claim.new(assertion_id: secret.id, evidence_id: secret_binding.id, basis: :registry, polarity: :supports),
+        claim.new(assertion_id: ghost.id, evidence_id: ghost_source.id, basis: :reflection, polarity: :supports),
+        claim.new(assertion_id: compromised.id, evidence_id: state_source.id, basis: :syntax, polarity: :supports)
+      ]
+    )
   end
 end

@@ -58,12 +58,13 @@ module Maglev
       @adapter = adapter
     end
 
-    def plan(question:, snapshot:, resource:, constraints: {}, planning_facts: {}, base_relation: nil)
+    def plan(question:, snapshot:, resource:, constraints: {}, planning_facts: {}, base_relation: nil,
+      semantic_context: nil)
       root = resource.to_s
       trace_id = SecureRandom.uuid
       request_constraints = normalize_constraints(constraints)
       output = Trace.instrument(:planning, trace_id: trace_id, resource: root) do |payload|
-        provider_plan(question, snapshot, request_constraints, planning_facts, nil).tap do |result|
+        provider_plan(question, snapshot, request_constraints, planning_facts, nil, semantic_context).tap do |result|
           payload[:status] = result.is_a?(Hash) ? result["status"]&.to_sym || :invalid : :invalid
         end
       end
@@ -82,7 +83,7 @@ module Maglev
       unless validation.valid?
         repair = {errors: safe_errors(validation.errors)}.freeze
         output = Trace.instrument(:planning, trace_id: trace_id, resource: root) do |payload|
-          provider_plan(question, snapshot, request_constraints, planning_facts, repair).tap do |result|
+          provider_plan(question, snapshot, request_constraints, planning_facts, repair, semantic_context).tap do |result|
             payload[:status] = result.is_a?(Hash) ? result["status"]&.to_sym || :invalid : :invalid
           end
         end
@@ -108,9 +109,11 @@ module Maglev
 
     private
 
-    def provider_plan(question, snapshot, constraints, planning_facts, repair)
-      @adapter.plan(question: question.to_s, schema_snapshot: snapshot, constraints: constraints,
-        planning_facts: planning_facts, query_ir_schema: QUERY_IR_SCHEMA, repair: repair)
+    def provider_plan(question, snapshot, constraints, planning_facts, repair, semantic_context)
+      request = {question: question.to_s, schema_snapshot: snapshot, constraints: constraints,
+                 planning_facts: planning_facts, query_ir_schema: QUERY_IR_SCHEMA, repair: repair}
+      request[:semantic_context] = semantic_context if semantic_context
+      @adapter.plan(**request)
     end
 
     def validate(input, snapshot, root, constraints)

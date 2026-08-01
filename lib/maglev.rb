@@ -4,6 +4,14 @@ require_relative "maglev/version"
 require_relative "maglev/configuration"
 require_relative "maglev/provider_configuration"
 require_relative "maglev/errors"
+require_relative "maglev/semantic_graph"
+require_relative "maglev/semantic_snapshot"
+require_relative "maglev/semantic_discovery"
+require_relative "maglev/semantic_snapshot_builder"
+require_relative "maglev/semantic_snapshot_store"
+require_relative "maglev/authorized_semantic_context"
+require_relative "maglev/semantic_interpreter"
+require_relative "maglev/semantic_grounding"
 require_relative "maglev/removed_interface"
 require_relative "maglev/authorization"
 require_relative "maglev/provider_call"
@@ -101,6 +109,10 @@ module Maglev
 
     def abort_index_generation!(generation)
       IndexGeneration.find_by!(generation: generation.to_s).abort!
+    end
+
+    def semantic_snapshot
+      SemanticSnapshotStore.active
     end
   end
 end

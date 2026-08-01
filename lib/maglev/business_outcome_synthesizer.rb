@@ -12,12 +12,14 @@ module Maglev
       @adapter = adapter
     end
 
-    def synthesize(question:, execution:)
-      output = @adapter.synthesize(
+    def synthesize(question:, execution:, semantic_context: nil)
+      request = {
         question: question.to_s,
         evidence: execution.evidence,
         limitations: execution.limitations
-      )
+      }
+      request[:semantic_context] = semantic_context if semantic_context
+      output = @adapter.synthesize(**request)
       validate_output!(output)
       evidence_by_id = execution.evidence.to_h { |item| [item.step_id, item] }
       findings = claims(output.fetch("findings"), evidence_by_id, :finding)

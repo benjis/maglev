@@ -38,18 +38,20 @@ module Maglev
       @limits = limits
     end
 
-    def plan(question:, planning_facts:)
+    def plan(question:, planning_facts:, semantic_context: nil)
       unless @adapter&.respond_to?(:business_plan)
         raise ConfigurationError, "planner adapter must implement #business_plan"
       end
 
-      output = @adapter.business_plan(
+      request = {
         question: question.to_s,
         schema_snapshot: @snapshot,
         limits: @limits,
         plan_schema: PLAN_SCHEMA,
         planning_facts: planning_facts
-      )
+      }
+      request[:semantic_context] = semantic_context if semantic_context
+      output = @adapter.business_plan(**request)
       raise PlanValidationError, "Planner returned an invalid Business Question Plan" unless output.is_a?(Hash)
 
       input = output["plan"] || output

@@ -10,9 +10,9 @@ It helps an existing Rails application answer business questions such as:
 - "What changed in revenue this quarter, and what are customers saying about it?"
 
 The caller asks one natural-language question. The application decides which
-records are authorized. Maglev learns the available structure from Active
-Record, gathers bounded structured and semantic Evidence, and returns one
-`BusinessOutcome`.
+records are authorized. Maglev learns physical structure from Active Record,
+reconstructs business meaning from a local codebase Semantic Layer, gathers
+bounded structured and knowledge Evidence, and returns one `BusinessOutcome`.
 
 ```ruby
 outcome = Maglev.ask(
@@ -27,13 +27,13 @@ internal planning decision, not something a business user should need to
 understand.
 
 > **Pre-1.0 compatibility:** minor releases may contain breaking changes.
-> v0.3 intentionally removes incompatible v0.2 declarations and entrypoints
-> instead of preserving compatibility aliases.
+> Review the changelog and rebuild generated artifacts when upgrading.
 
 ## Contents
 
 - [Why Maglev exists](#why-maglev-exists)
 - [How Maglev thinks about your application](#how-maglev-thinks-about-your-application)
+- [Codebase Semantic Layer](#codebase-semantic-layer)
 - [Quick start](#quick-start)
 - [Registering resources](#registering-resources)
 - [Structured policy: `queryable`](#structured-policy-queryable)
@@ -77,7 +77,10 @@ Maglev takes a different approach:
    application-supplied `ActiveRecord::Relation`.
 5. **Plan bounded work.** Provider output is validated data, never executable
    code, unrestricted SQL, or an open-ended agent loop.
-6. **Return Evidence, not just prose.** Findings are grounded in Evidence;
+6. **Reconstruct business meaning locally.** An offline Semantic Snapshot links
+   terms, metrics, dimensions, lifecycle concepts, and their code Evidence
+   without treating inferred meaning as business truth.
+7. **Return Evidence, not just prose.** Findings are grounded in Evidence;
    inferences and recommendations remain visibly separate.
 
 Maglev is designed for adding useful business intelligence to existing Rails
@@ -87,11 +90,16 @@ applications without turning those applications into agent runtimes.
 
 ```mermaid
 flowchart LR
+    R["Rails repository"] --> D["Offline semantic discovery"]
+    D --> SS["Semantic Snapshot"]
     Q["Business question"] --> P["Application policy resolver"]
     P --> AR["Authorized base relations"]
     P --> F["Bounded planning facts"]
     AR --> C["Authorized resource summaries"]
     F --> C
+    SS --> ASC["Authorized Semantic Context"]
+    P --> ASC
+    ASC --> C
     C --> S["Selected schema snapshots"]
     S --> B["Validated Business Question Plan"]
     B --> SQ["Structured ActiveRecord steps"]
@@ -99,6 +107,8 @@ flowchart LR
     SQ --> E["Evidence"]
     KQ --> E
     E --> O["BusinessOutcome"]
+    ASC --> G["SemanticGrounding"]
+    G --> O
 ```
 
 The important boundaries are:
@@ -108,9 +118,79 @@ The important boundaries are:
 - `queryable` governs structured querying.
 - `knowledge` separately opts content into semantic indexing and retrieval.
 - `policy_resolver` decides which records are available for the current request.
+- Offline discovery can describe the full repository, but it grants no runtime
+  authority and never runs inside `Maglev.ask`.
+- Only the request's Authorized Semantic Context can reach selection, planning,
+  synthesis, traces, or `SemanticGrounding`.
 - Maglev exposes only bounded, authorized schema snapshots to planning.
 - A fixed Business Question Plan is validated before execution and cannot grow
   new steps at runtime.
+
+## Codebase Semantic Layer
+
+The v0.4 Semantic Layer is a generated, evidence-backed view of business meaning
+already present in a Rails repository. It complements Active Record Reflection:
+Reflection describes physical structure, while local semantic discovery connects
+that structure to concepts such as:
+
+- Semantic Contexts and Entities;
+- Terms, Metrics, and Dimensions;
+- lifecycle States and Transitions; and
+- Business Rules and descriptive Actions.
+
+Discovery combines the Maglev Registry, Active Record Reflection, schema
+metadata, and Prism analysis of Ruby source. It runs locally and does not send
+application source to an LLM provider. CodeGraph, Graphify, and model-assisted
+discovery are not required.
+
+The generated snapshot is a normalized YAML graph of Nodes, Edges, Evidence, and
+Claims. Meanings retain one of four evidence-derived statuses:
+
+| Semantic status | Runtime meaning |
+| --- | --- |
+| `observed` | Directly supported by structure or code. |
+| `reconstructed` | Supported interpretation with no competing Evidence; use is reported as an assumption. |
+| `contested` | Competing meanings exist; `Maglev.ask` requests bounded clarification. |
+| `missing` | Evidence is insufficient; correctness-sensitive questions are unsupported. |
+
+Semantic Status is separate from Execution Status. Discovery never makes a
+scope, field, aggregate, association, or Action executable. A discovered meaning
+can execute only when it compiles to capabilities already registered and
+authorized through `queryable`.
+
+### Build and enable the snapshot
+
+The Semantic Layer is disabled when `semantic_snapshot_path` is `nil`, preserving
+the non-semantic question flow. Build the initial artifact while it is disabled:
+
+```bash
+bin/rails maglev:semantics:build
+bin/rails maglev:semantics:validate
+```
+
+The default output is
+`config/maglev/semantic-layer.generated.yml`. It is a derived deployment
+artifact: regenerate it when Ruby source or Resource declarations change, and
+package the validated file with the application.
+
+After the first build, enable loading and restart the application:
+
+```ruby
+Maglev.configure do |config|
+  config.semantic_snapshot_path =
+    Rails.root.join("config/maglev/semantic-layer.generated.yml")
+end
+```
+
+When enabled, a missing, invalid, stale, oversized, or Registry-incompatible
+snapshot fails boot closed. Production loads and freezes the snapshot.
+Development can reload an already-built valid replacement; reload failure keeps
+the previous valid snapshot.
+
+Discovery recognizes common Rails models, columns, enums, associations, scopes,
+validations, predicates, state changes, query objects, services, and jobs.
+Automatically reconstructed Metrics execute only when their aggregate, fields,
+and scopes already exist as registered and authorized `queryable` capabilities.
 
 ## Quick start
 
@@ -358,7 +438,7 @@ Maglev does not use an LLM to guess whether a column name contains a token,
 digest, secret, credential, or PII. Business sensitivity cannot be inferred
 reliably from a database type or name.
 
-In v0.3, every non-serialized physical column is structurally discoverable
+By default, every non-serialized physical column is structurally discoverable
 unless you narrow or block it. For models containing sensitive columns, prefer
 an allowlist:
 
@@ -728,12 +808,15 @@ Maglev.ask(question, user:, context:, continuation: nil)
 The engine:
 
 1. resolves authorized resources;
-2. exposes only bounded resource summaries to resource selection;
-3. expands detailed schemas only for selected resources;
-4. asks the planner for a structured, knowledge, or multi-resource Plan;
-5. validates the entire finite Plan;
-6. executes read-only structured queries and/or authorized retrieval;
-7. returns a `BusinessOutcome`.
+2. derives an Authorized Semantic Context when a snapshot is enabled;
+3. interprets executable semantic meanings or exposes only bounded authorized
+   semantics to resource selection and planning;
+4. expands detailed schemas only for selected resources;
+5. asks the planner for a structured, knowledge, or multi-resource Plan;
+6. validates the entire finite Plan;
+7. executes read-only structured queries and/or authorized retrieval;
+8. returns a `BusinessOutcome` with separate execution Evidence and Semantic
+   Grounding.
 
 ### Clarification
 
@@ -778,6 +861,7 @@ warnings
 trace_id
 clarification
 continuation
+semantic_grounding
 ```
 
 Statuses:
@@ -798,6 +882,28 @@ For multi-resource outcomes:
 - assumptions and limitations are explicit.
 
 Provider-generated claims that do not reference existing Evidence are rejected.
+
+When the Semantic Layer is enabled, `semantic_grounding` explains which
+authorized meanings shaped the result:
+
+```ruby
+grounding = outcome.semantic_grounding
+
+if grounding
+  grounding.snapshot_fingerprint
+  grounding.contexts
+  grounding.meanings
+  grounding.claim_ids
+  grounding.evidence_ids
+  grounding.assumptions
+  grounding.gaps
+  grounding.contests
+end
+```
+
+Semantic Grounding contains identifiers and statuses, not application source or
+provider reasoning. It is immutable and bounded independently from execution
+Evidence. Failed outcomes expose only a safe minimal snapshot identity.
 
 ## Multiple resources and hybrid questions
 
@@ -1086,6 +1192,12 @@ knowledge policy.
 | `continuation_ttl` | `300` seconds | Token lifetime. |
 | `continuation_max_bytes` | `4,096` | Maximum encoded token size. |
 
+### Semantic Layer
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `semantic_snapshot_path` | `nil` | Explicitly enables loading the generated Semantic Snapshot. Relative paths resolve from the Rails root. |
+
 ## DSL reference
 
 ### Resource DSL
@@ -1129,7 +1241,7 @@ Used inside `maglev_resource [identifier] do ... end`:
 | `expose_rich_text(*names)` | Include Action Text content. |
 
 `expose` is a lower-level alias for `content`, and `hide` is an alias for
-`prohibit`. Prefer the canonical v0.3 terms in new code.
+`prohibit`. Prefer the canonical terms in new code.
 
 ## Terminology
 
@@ -1141,6 +1253,11 @@ Maglev uses precise language because the boundaries matter:
 | **Knowledge source** | Explicitly exposed application content available to semantic indexing and retrieval. |
 | **Registry** | Discovered ActiveRecord structure plus explicit application policy. Discovery itself grants no record access. |
 | **Schema snapshot** | An immutable, bounded, request-authorized description derived from the Registry and ActiveRecord metadata. |
+| **Semantic Snapshot** | An immutable generated YAML graph of codebase meanings, relationships, Evidence, and Claims. |
+| **Semantic Status** | Whether a meaning is observed, reconstructed, contested, or missing from the available Evidence. |
+| **Execution Status** | Whether a semantic meaning has a safe binding to existing registered and authorized capabilities. |
+| **Authorized Semantic Context** | The bounded subset of a Semantic Snapshot that may be disclosed and used for one authorized Business Question. |
+| **Semantic Grounding** | The bounded account of semantic meanings, Claims, assumptions, gaps, and contests that shaped a BusinessOutcome. |
 | **Query IR** | A serializable, non-executable structured query representation. |
 | **Base relation** | The application-supplied relation carrying tenant, authorization, and application constraints that compilation cannot widen. |
 | **Business Question Plan** | An immutable, serializable, versioned, acyclic graph of typed bounded steps. |
@@ -1164,7 +1281,7 @@ Maglev is designed to reduce the authority granted to model output:
 - Retrieved content is treated as data, not instructions.
 - No provider can add arbitrary capabilities during execution.
 
-Maglev v0.3 does **not** provide:
+Maglev v0.4 does **not** provide:
 
 - natural-language writes;
 - unrestricted SQL or code execution;
@@ -1172,10 +1289,14 @@ Maglev v0.3 does **not** provide:
 - an external vector-store abstraction;
 - conversational memory;
 - a general-purpose agent runtime;
-- a governed semantic metric/dimension layer.
+- human approval or governance workflows for discovered semantics;
+- model-assisted semantic discovery;
+- composite Entities spanning multiple Resources;
+- execution of semantic Actions, arbitrary Ruby, or unrestricted formulas.
 
-The semantic layer and open-ended clarification belong to later iterations.
-v0.3 is intentionally a bounded, one-question execution model.
+v0.4 remains a bounded, one-question execution model. It can use semantic
+context and ask one constrained clarification, but it is not a persistent
+Question Session.
 
 ## Development
 
